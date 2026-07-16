@@ -180,5 +180,97 @@ class TestHeroSeriesLabel(unittest.TestCase):
         self.assertTrue(all_bg(img.crop(self.LABEL_BAND)))
 
 
+class TestGraphStyleRow(unittest.TestCase):
+    def row(self):
+        page = mudi.SettingsPage(mudi.MockApp())
+        rows = getattr(page, "rows", None) or page.widgets
+        found = [r for r in rows
+                 if isinstance(r, mudi.StepperRow) and r.skey == "graph_style"]
+        self.assertEqual(len(found), 1, "expected exactly one graph_style row")
+        return found[0]
+
+    def test_row_offers_every_registered_style(self):
+        self.assertEqual(self.row().options, list(mudi.GAUGE_STYLES))
+
+    def test_row_shows_the_style_labels(self):
+        r = self.row()
+        self.assertEqual([r.fmt(v) for v in r.options], ["Hero", "Arc"])
+
+    def test_row_wraps(self):
+        self.assertTrue(self.row().wrap)
+
+    def test_row_is_not_confirm_gated(self):
+        self.assertFalse(self.row().confirm)             # cosmetic, instant, reversible
+
+
+class TestMetricPageRebuild(unittest.TestCase):
+    def app(self):
+        a = mudi.MockApp()
+        a.pages = [mudi.SignalPage(a), mudi.WifiPage(a), mudi.SystemPage(a),
+                   mudi.EthernetPage(a), mudi.SettingsPage(a)]
+        a.idx = 4
+        a.current = a.pages[4]
+        return a
+
+    def test_rebuild_swaps_every_metric_page_to_the_new_style(self):
+        a = self.app()
+        for p in a.pages[:4]:
+            self.assertIsInstance(only(p, mudi.Gauge), mudi.HeroGraph)
+        a.settings.vals["graph_style"] = "arc"
+        a._rebuild_metric_pages()
+        for p in a.pages[:4]:
+            self.assertIsInstance(only(p, mudi.Gauge), mudi.ArcGauge)
+
+    def test_rebuild_preserves_the_settings_page_instance(self):
+        a = self.app()
+        settings_page = a.pages[4]
+        a.settings.vals["graph_style"] = "arc"
+        a._rebuild_metric_pages()
+        self.assertIs(a.pages[4], settings_page)         # scroll pos + tapped row must survive
+        self.assertIs(a.current, settings_page)
+
+    def test_rebuild_never_leaves_current_dangling(self):
+        a = self.app()
+        a.idx = 0
+        a.current = a.pages[0]
+        a.settings.vals["graph_style"] = "arc"
+        a._rebuild_metric_pages()
+        self.assertIs(a.current, a.pages[0])             # render thread must never see a stale page
+        self.assertIsInstance(only(a.current, mudi.Gauge), mudi.ArcGauge)
+
+    def test_rebuild_keeps_page_count_and_order(self):
+        a = self.app()
+        before = [type(p) for p in a.pages]
+        a.settings.vals["graph_style"] = "arc"
+        a._rebuild_metric_pages()
+        self.assertEqual([type(p) for p in a.pages], before)
+
+
+class TestApplySettingRouting(unittest.TestCase):
+    def test_graph_style_triggers_a_rebuild(self):
+        class SpyApp(mudi.MockApp):
+            apply_setting = mudi.App.apply_setting       # exercise the real router
+            def __init__(self):
+                super().__init__()
+                self.rebuilds = 0
+            def _rebuild_metric_pages(self):
+                self.rebuilds += 1
+        a = SpyApp()
+        a.apply_setting("graph_style", "arc")
+        self.assertEqual(a.rebuilds, 1)
+
+    def test_other_settings_do_not_rebuild(self):
+        class SpyApp(mudi.MockApp):
+            apply_setting = mudi.App.apply_setting
+            def __init__(self):
+                super().__init__()
+                self.rebuilds = 0
+            def _rebuild_metric_pages(self):
+                self.rebuilds += 1
+        a = SpyApp()
+        a.apply_setting("screen_timeout", "60")
+        self.assertEqual(a.rebuilds, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

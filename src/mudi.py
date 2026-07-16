@@ -719,6 +719,8 @@ class SettingsPage(Page):
             StepperRow(a, "Screen timeout", "screen_timeout", ["0", "15", "30", "60", "300"],
                        fmt=lambda v: self.TIMEOUTS.get(v, v)),
             ToggleRow(a, "Awake on charge", "stay_awake_charging"),
+            StepperRow(a, "Graph style", "graph_style", list(GAUGE_STYLES),
+                       fmt=lambda v: GAUGE_STYLES[v].LABEL, wrap=True),
             StepperRow(a, "Default page", "default_page", ["0", "1", "2", "3"],
                        fmt=lambda v: self.PAGE_NAMES[int(v)], wrap=True),
             ToggleRow(a, "Lock band n71", "band_lock", confirm=True,
@@ -762,6 +764,22 @@ class App:
     def gauge_cls(self):                                 # selected hero style; junk value -> Hero
         return GAUGE_STYLES.get(self.settings.get("graph_style"), HeroGraph)
 
+    def _rebuild_metric_pages(self):
+        """Re-build only the pages whose layout depends on the gauge style.
+
+           SettingsPage is deliberately spared: you change the style FROM it, so rebuilding it
+           would destroy the scroll position and the row under the user's finger. self.current is
+           never set to None, so the render thread always sees a fully-built page — either the old
+           one or the new one."""
+        for i, p in enumerate(self.pages):
+            if isinstance(p, MetricPage):
+                live = (p is self.current)
+                if live: p.unwire()                      # drop subscribers before adding new ones
+                self.pages[i] = type(p)(self)
+                if live:
+                    self.current = self.pages[i]; self.current.wire()
+        self.wake.set()
+
     def _brightness(self):
         try: return int(float(self.settings.get("brightness")))
         except Exception: return 90
@@ -799,6 +817,8 @@ class App:
             elif skey == "start_on_boot":
                 cmd = "enable" if val == "1" else "disable"
                 for svc in ("mudi", "mudi-watch"): subprocess.Popen(["/etc/init.d/" + svc, cmd])
+            elif skey == "graph_style":
+                self._rebuild_metric_pages()
             # screen_timeout / stay_awake_charging / default_page / longpress: read where used
         except Exception as e:
             print("apply", skey, "failed:", e)
