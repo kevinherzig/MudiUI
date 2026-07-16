@@ -46,20 +46,32 @@ display rather than the stock app's internals. The two hand the panel back and f
 
 ## Install
 
-Get the files onto the router and run the on-device installer. The Mudi has no `scp`/sftp, so the
-simplest path is **tar over SSH** (replace the address with your router's):
+**One line, on the router.** SSH into the Mudi and run:
 
 ```sh
-git clone https://github.com/kevinherzig/MudiUI.git
-cd MudiUI/src
+wget -q https://github.com/kevinherzig/MudiUI/releases/latest/download/install-mudiui.sh -O install-mudiui.sh && sh install-mudiui.sh
+```
+
+That downloads MudiUI and runs the on-device installer, which **guards the hardware** (refuses to
+run on anything that isn't a 240×320 E5800 panel), installs only missing dependencies, deploys the
+files, enables both services, registers them in `/etc/sysupgrade.conf`, and starts the UI.
+**Re-running it updates in place.** To install a branch/tag other than `main`, set `MUDIUI_REF`.
+
+<details>
+<summary>Alternative: install from a local clone (no network fetch on the router)</summary>
+
+The Mudi has no `scp`/sftp, so stream the files with **tar over SSH** (replace the address with
+your router's):
+
+```sh
+git clone https://github.com/kevinherzig/MudiUI.git && cd MudiUI/src
 tar cf - mudi.py mudi-watch.py mudi.init mudi-watch.init mudi.config install.sh uninstall.sh \
 | ssh root@192.168.8.1 'mkdir -p /tmp/mudiui && tar xf - -C /tmp/mudiui && sh /tmp/mudiui/install.sh'
 ```
+</details>
 
-`install.sh` runs **on the router**: it guards the hardware (refuses to run on anything that isn't
-a 240×320 E5800 panel), installs only missing dependencies, deploys the files, enables both
-services, registers them in `/etc/sysupgrade.conf`, and starts the UI. Re-running it is also how
-you **update** in place. To remove: `sh /tmp/mudiui/uninstall.sh` (restores the stock UI).
+To remove, run `uninstall.sh` from the downloaded source (e.g.
+`/tmp/mudiui-src/MudiUI-*/src/uninstall.sh` after the one-liner) — it restores the stock UI.
 
 ## Usage
 
