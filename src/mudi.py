@@ -645,51 +645,65 @@ class Page:
                 w.action(); return True                                     # buttons
         return False
 
-class SignalPage(Page):
-    title = "Signal"
-    def build(self):
-        a = self.app
-        self.add(Header(a, title="sim.carrier", badge="sim.slot", right="net.mode",
-                        flash="signal.rsrp", prefix="SIM"))
-        self.add(HeroGraph(a, value="signal.rsrp", series="signal.rsrp", unit="dBm  RSRP"))
-        self.add(StatsRow(a, 172, [("RSRQ", "signal.rsrq"), ("SINR", "signal.sinr")]))
-        self.add(InfoPanel(a, 12, 208, "SERVING CELL", "CELL", "cell.id",
-                           [("BAND", "cell.band"), ("FREQ", "cell.freq"), ("BW", "cell.bw")]))
+class MetricPage(Page):
+    """A metric page declares BINDINGS ONLY — the selected Gauge style decides the geometry.
 
-class WifiPage(Page):
-    title = "WiFi"
-    def build(self):
-        a = self.app
-        self.add(Header(a, title="wifi.ssid", badge="wifi.mode", right="wifi.band",
-                        flash="wifi.signal", prefix=""))
-        self.add(ArcGauge(a, value="wifi.signal", level="wifi.level", unit="dBm  LINK"))
-        self.add(StatsRow(a, 150, [("RATE", "wifi.rate"), ("CHAN", "wifi.chan")]))
-        self.add(InfoPanel(a, 12, 184, "ACCESS POINT", "SSID", "wifi.ap",
-                           [("CLIENTS", "wifi.clients"), ("CH", "wifi.chan"), ("WIDTH", "wifi.width")]))
-        self.add(Trace(a, "wifi.signal", y=270, h=36))
+       The style says where the stack resumes below it (STACK_Y) and whether it already shows
+       history; if it doesn't, we add a Trace. That's why switching styles needs no page edits."""
+    HEADER = {}; GAUGE = {}; STATS = []; PANEL = None
+    STATS_TO_PANEL = 36; PANEL_H = 74; PANEL_TO_TRACE = 10; TRACE_H = 36
 
-class SystemPage(Page):
-    title = "System"
     def build(self):
         a = self.app
-        self.add(Header(a, title="System", badge="batt.state", right="sys.uptime",
-                        flash="sys.load", prefix=""))
-        self.add(ArcGauge(a, value="batt.pct", level="batt.level", unit="%  BATTERY"))
-        self.add(StatsRow(a, 150, [("CPU", "sys.cputemp"), ("LOAD", "sys.load")]))
-        self.add(InfoPanel(a, 12, 184, "RESOURCES", "RAM", "sys.ram",
-                           [("FREE", "sys.free"), ("BATT", "batt.temp"), ("UP", "sys.uptime")]))
-        self.add(Trace(a, "sys.load", y=270, h=36))
+        self.add(Header(a, **self.HEADER))
+        g = self.add(a.gauge_cls()(a, **self.GAUGE))
+        self.add(StatsRow(a, g.STACK_Y, self.STATS))
+        py = g.STACK_Y + self.STATS_TO_PANEL
+        self.add(InfoPanel(a, 12, py, *self.PANEL))
+        if not g.SUPPLIES_HISTORY:                      # arc shows level, not trend -> add a trace
+            self.add(Trace(a, self.GAUGE["series"],
+                           y=py + self.PANEL_H + self.PANEL_TO_TRACE, h=self.TRACE_H))
 
-class EthernetPage(Page):
-    title = "Ethernet"
-    def build(self):
-        a = self.app
-        self.add(Header(a, title="Ethernet", badge="eth.port", right="eth.link", flash="eth.rxn", prefix=""))
-        self.add(ArcGauge(a, value="eth.speed", level="eth.level", unit="LINK"))
-        self.add(StatsRow(a, 150, [("RX", "eth.rx"), ("TX", "eth.tx")]))
-        self.add(InfoPanel(a, 12, 184, "LAN", "IP", "eth.ip",
-                           [("PORT", "eth.port"), ("CLIENTS", "eth.clients"), ("PROTO", "eth.proto")]))
-        self.add(Trace(a, "eth.rxn", y=270, h=36))
+class SignalPage(MetricPage):
+    title  = "Signal"
+    HEADER = dict(title="sim.carrier", badge="sim.slot", right="net.mode",
+                  flash="signal.rsrp", prefix="SIM")
+    GAUGE  = dict(value="signal.rsrp", level="signal.level",
+                  series="signal.rsrp", unit="dBm  RSRP")
+    STATS  = [("RSRQ", "signal.rsrq"), ("SINR", "signal.sinr")]
+    PANEL  = ("SERVING CELL", "CELL", "cell.id",
+              [("BAND", "cell.band"), ("FREQ", "cell.freq"), ("BW", "cell.bw")])
+
+class WifiPage(MetricPage):
+    title  = "WiFi"
+    HEADER = dict(title="wifi.ssid", badge="wifi.mode", right="wifi.band",
+                  flash="wifi.signal", prefix="")
+    GAUGE  = dict(value="wifi.signal", level="wifi.level",
+                  series="wifi.signal", unit="dBm  LINK")
+    STATS  = [("RATE", "wifi.rate"), ("CHAN", "wifi.chan")]
+    PANEL  = ("ACCESS POINT", "SSID", "wifi.ap",
+              [("CLIENTS", "wifi.clients"), ("CH", "wifi.chan"), ("WIDTH", "wifi.width")])
+
+class SystemPage(MetricPage):
+    title  = "System"
+    HEADER = dict(title="System", badge="batt.state", right="sys.uptime",
+                  flash="sys.load", prefix="")
+    # headlines the battery but graphs load -> the curve is labelled so the hero reads honestly
+    GAUGE  = dict(value="batt.pct", level="batt.level",
+                  series="sys.load", unit="%  BATTERY", series_label="LOAD")
+    STATS  = [("CPU", "sys.cputemp"), ("LOAD", "sys.load")]
+    PANEL  = ("RESOURCES", "RAM", "sys.ram",
+              [("FREE", "sys.free"), ("BATT", "batt.temp"), ("UP", "sys.uptime")])
+
+class EthernetPage(MetricPage):
+    title  = "Ethernet"
+    HEADER = dict(title="Ethernet", badge="eth.port", right="eth.link",
+                  flash="eth.rxn", prefix="")
+    GAUGE  = dict(value="eth.speed", level="eth.level",
+                  series="eth.rxn", unit="LINK", series_label="RX")
+    STATS  = [("RX", "eth.rx"), ("TX", "eth.tx")]
+    PANEL  = ("LAN", "IP", "eth.ip",
+              [("PORT", "eth.port"), ("CLIENTS", "eth.clients"), ("PROTO", "eth.proto")])
 
 class SettingsPage(Page):
     title = "Settings"

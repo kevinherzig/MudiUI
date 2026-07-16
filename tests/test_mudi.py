@@ -66,5 +66,77 @@ class TestMockApp(unittest.TestCase):
         self.assertEqual(seen, [])
 
 
+METRIC_PAGES = ("SignalPage", "WifiPage", "SystemPage", "EthernetPage")
+
+
+def build_page(name, style):
+    a = mudi.MockApp()
+    a.settings.vals["graph_style"] = style
+    return getattr(mudi, name)(a)
+
+
+def only(page, cls):
+    """The page's single widget of type cls (fails loudly if there isn't exactly one)."""
+    found = [w for w in page.widgets if isinstance(w, cls)]
+    assert len(found) == 1, "expected 1 %s, got %d" % (cls.__name__, len(found))
+    return found[0]
+
+
+class TestMetricPageLayout(unittest.TestCase):
+    def test_all_metric_pages_subclass_metricpage(self):
+        for name in METRIC_PAGES:
+            self.assertTrue(issubclass(getattr(mudi, name), mudi.MetricPage), name)
+
+    def test_page_builds_the_selected_style(self):
+        for style, cls in (("hero", mudi.HeroGraph), ("arc", mudi.ArcGauge)):
+            for name in METRIC_PAGES:
+                self.assertIsInstance(only(build_page(name, style), mudi.Gauge), cls,
+                                      "%s / %s" % (name, style))
+
+    def test_hero_layout_matches_todays_signal_page(self):
+        for name in METRIC_PAGES:
+            p = build_page(name, "hero")
+            self.assertEqual(only(p, mudi.StatsRow).y, 172, name)
+            self.assertEqual(only(p, mudi.InfoPanel).y, 208, name)
+            self.assertEqual([w for w in p.widgets if isinstance(w, mudi.Trace)], [], name)
+
+    def test_arc_layout(self):
+        for name in METRIC_PAGES:
+            p = build_page(name, "arc")
+            self.assertEqual(only(p, mudi.StatsRow).y, 150, name)
+            self.assertEqual(only(p, mudi.InfoPanel).y, 186, name)
+            trace = only(p, mudi.Trace)
+            self.assertEqual((trace.y, trace.h), (270, 36), name)
+
+    def test_arc_trace_graphs_the_pages_declared_series(self):
+        for name, series in (("SignalPage", "signal.rsrp"), ("WifiPage", "wifi.signal"),
+                             ("SystemPage", "sys.load"), ("EthernetPage", "eth.rxn")):
+            self.assertEqual(only(build_page(name, "arc"), mudi.Trace).k, series, name)
+
+    def test_hero_binds_the_pages_declared_series(self):
+        for name, series in (("SignalPage", "signal.rsrp"), ("WifiPage", "wifi.signal"),
+                             ("SystemPage", "sys.load"), ("EthernetPage", "eth.rxn")):
+            self.assertEqual(only(build_page(name, "hero"), mudi.HeroGraph).k_series, series, name)
+
+    def test_system_and_ethernet_label_their_curve(self):
+        self.assertEqual(only(build_page("SystemPage", "hero"), mudi.Gauge).series_label, "LOAD")
+        self.assertEqual(only(build_page("EthernetPage", "hero"), mudi.Gauge).series_label, "RX")
+
+    def test_signal_and_wifi_need_no_curve_label(self):
+        for name in ("SignalPage", "WifiPage"):
+            self.assertIsNone(only(build_page(name, "hero"), mudi.Gauge).series_label, name)
+
+    def test_every_page_and_style_actually_paints(self):
+        from PIL import Image, ImageDraw
+        for style in ("hero", "arc"):
+            for name in METRIC_PAGES:
+                p = build_page(name, style)
+                p.wire()
+                img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
+                p.draw(ImageDraw.Draw(img), mudi.Theme)
+                self.assertGreater(len(set(img.getdata())), 1,
+                                   "%s/%s drew nothing but background" % (name, style))
+
+
 if __name__ == "__main__":
     unittest.main()
