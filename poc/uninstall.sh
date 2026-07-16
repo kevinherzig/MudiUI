@@ -31,6 +31,7 @@ say "Removing files"
 for f in $TARGETS; do
   [ -e "$f" ] && { rm -f "$f"; printf '    removed %s\n' "$f"; }
 done
+[ -e /etc/config/mudi ] && { rm -f /etc/config/mudi; printf '    removed %s\n' /etc/config/mudi; }
 
 if [ -f "$SYSUP" ]; then
   say "Cleaning $SYSUP"

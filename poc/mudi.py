@@ -8,24 +8,32 @@ Object model (drives consistency across many pages):
                  count > 0, notifies subscribers on change (deduped). App-owned.
     Widget       PARAMETERIZED by bus keys — the same ArcGauge shows cellular signal
                  on SignalPage and WiFi link on WifiPage. Redraws reactively.
-    Page         bundles configured widgets (its UI). SignalPage / WifiPage.
-    App          owns sources + key->source registry + display + touch + swipe nav.
+    Page         bundles configured widgets (its UI). SignalPage / WifiPage / SettingsPage.
+    App          owns sources + key->source registry + display + touch + swipe nav
+                 + settings (uci) + idle-blank + modal overlays.
 
 Reused widgets prove the consistency thesis: WifiPage adds NO new widget classes.
 The key=... bindings below are exactly what the future JSON layer will declare.
 
 Run on the Mudi:  python3 mudi.py [seconds]   (no arg = until STOCK UI tapped)
-Preview a frame:  python3 mudi.py --mock [signal|wifi]
+Preview a frame:  python3 mudi.py --mock [signal|wifi|system|eth|settings]
 """
-import sys, os, time, json, subprocess, threading, signal, re
+import sys, os, time, json, subprocess, threading, signal, re, textwrap
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 240, 320
 BUS = "cpu"
-STOCK_BTN = (12, H-34, W-12, H-10)
 _MISS = object()
 _FLASH = b'\xff\x07' * (W * H)                            # full-screen cyan (RGB565 0x07FF) toggle flash
+
+MUDI_VERSION = "0.1"
+BL_DIR = "/sys/class/backlight/soc:backlight"            # brightness (20..120) + bl_power (0 on / 1 off)
+# Full band lists backed up from the modem before the n71 lock (verified 2026-07-15) — used to
+# RESTORE when band lock is turned off.
+NR5G_BANDS_ALL = "2:5:7:12:13:14:25:26:29:30:38:41:48:66:70:71:77:78"
+NSA_BANDS_ALL  = "2:5:7:12:14:25:26:30:38:41:48:66:71:77:78"
+MODE_AT = {"auto": "AUTO", "5g": "NR5G", "lte": "LTE"}   # net_mode value -> AT+QNWPREFCFG mode_pref
 
 
 # ───────────────────────── Theme ─────────────────────────
@@ -42,7 +50,7 @@ class Theme:
     BTN=(18,22,30); BTN_BD=(40,60,66); DOT_OFF=(0,66,66)
     bold = _load(_BOLD, (10,12,13,15))
     med  = _load(_MED,  (9,10,11))
-    mono = _load(_MONO, (9,11,12,15,32))
+    mono = _load(_MONO, (9,10,11,12,15,32))
 
 def ctext(d, cx, y, t, f, fill): d.text((cx - d.textlength(t, font=f)/2, y), t, font=f, fill=fill)
 
@@ -99,9 +107,52 @@ def _ubus(obj, method, args):
                        capture_output=True, text=True, timeout=8)
     return json.loads(o.stdout) if o.stdout.strip() else {}
 
+def _at(cmd, sub_id, timeout=5):                        # run an AT command via the modem ubus bridge
+    return _ubus("modem.CPU.AT", "get_result_AT",
+                 {"cmd": cmd, "sub_id": int(sub_id), "timeout": timeout})
+
 def _san(s):                                            # SSIDs can carry emoji the panel font lacks
     t = "".join(ch for ch in (s or "") if 32 <= ord(ch) < 127).strip()
     return t or "—"
+
+def _read(path):
+    try:
+        with open(path) as f: return f.read().strip()
+    except Exception: return None
+
+
+# ───────────────────────── Settings (uci-backed) ─────────────────────────
+class Settings:
+    """Reads/writes uci /etc/config/mudi (section 'main'). Falls back to DEFAULTS off-device."""
+    PKG = "mudi"; SEC = "main"
+    DEFAULTS = {"brightness": "90", "screen_timeout": "30", "stay_awake_charging": "1",
+                "default_page": "0", "band_lock": "0", "net_mode": "auto",
+                "longpress": "1.6", "start_on_boot": "1"}
+
+    def __init__(self):
+        self.vals = dict(self.DEFAULTS); self.load()
+
+    def load(self):
+        try:
+            o = subprocess.run(["uci", "-q", "show", self.PKG], capture_output=True, text=True, timeout=4)
+            pat = re.compile(r'%s\.%s\.(\w+)=(.*)' % (self.PKG, self.SEC))
+            for line in o.stdout.splitlines():
+                m = pat.match(line)
+                if m: self.vals[m.group(1)] = m.group(2).strip().strip("'")
+        except Exception:
+            pass
+
+    def get(self, k): return self.vals.get(k, self.DEFAULTS.get(k))
+
+    def set(self, k, v):
+        v = str(v); self.vals[k] = v
+        try:
+            subprocess.run(
+                "uci -q get {p}.{s} >/dev/null 2>&1 || uci set {p}.{s}=settings; "
+                "uci set {p}.{s}.{k}='{v}'; uci commit {p}".format(p=self.PKG, s=self.SEC, k=k, v=v),
+                shell=True, timeout=4)
+        except Exception:
+            pass
 
 
 class CellularSource(DataSource):
@@ -168,12 +219,6 @@ class WifiSource(DataSource):
         self._emit("wifi.ap", _san(ap.get("ssid")) if ap else "—")
         cl = _ubus("gl-clients", "list", {}).get("clients", {})
         self._emit("wifi.clients", sum(1 for c in cl.values() if c.get("online")))
-
-
-def _read(path):
-    try:
-        with open(path) as f: return f.read().strip()
-    except Exception: return None
 
 
 class SystemSource(DataSource):
@@ -275,6 +320,13 @@ class Header(Widget):
         d.text((W-10-rw, 9), self.right, font=hd, fill=th.CYAN)
         d.line((10, 25, W-10, 25), fill=th.GRID, width=1)
 
+class Banner(Widget):
+    """plain title bar for pages with no live header data (e.g. Settings)."""
+    def __init__(self, app, text): super().__init__(app); self.text = text
+    def draw(self, d, th):
+        d.text((12, 6), self.text, font=th.bold[15], fill=th.INK)
+        d.line((10, 25, W-10, 25), fill=th.GRID, width=1)
+
 class ArcGauge(Widget):
     """270° gauge: value_key shown in center, level_key (0..5) drives the arc."""
     def __init__(self, app, value, level, unit, cx=120, cy=92, r=50):
@@ -311,7 +363,6 @@ class HeroGraph(Widget):
         if isinstance(v, (int, float)): self.hist = (self.hist + [v])[-96:]
     def draw(self, d, th):
         x, y, w, h = self.x, self.y, self.w, self.h
-        # left column: big value, unit, hi/lo of the visible window
         d.text((x, y+12), str(self.value) if self.value is not None else "--", font=th.mono[32], fill=th.INK)
         d.text((x+2, y+50), self.unit, font=th.mono[11], fill=th.DIM)
         gx, gy = x+98, y; gw, gh = x+w-gx, h
@@ -321,7 +372,6 @@ class HeroGraph(Widget):
             d.text((x+22, y+80), "%d" % round(hi), font=th.mono[11], fill=th.SUB)
             d.text((x, y+96),  "lo", font=th.mono[9], fill=th.DIM)
             d.text((x+22, y+96), "%d" % round(lo), font=th.mono[11], fill=th.SUB)
-            # large chart
             d.rectangle((gx, gy, gx+gw, gy+gh), outline=th.GRID)
             for frac in (0.25, 0.5, 0.75):                 # faint gridlines
                 yy = gy + gh*frac; d.line((gx+1, yy, gx+gw-1, yy), fill=(18, 22, 30))
@@ -396,6 +446,154 @@ class Button(Widget):
         ctext(d, W/2, self.rect[1]+5, self.label, th.bold[12], th.CYAN)
 
 
+# ───────────────────────── Settings rows (touch controls, uci-backed) ─────────────────────────
+class Row(Widget):
+    """one settings line. Reads app.settings on draw; writes + applies on tap.
+       Rows implement on_touch(x,y)->bool (Page.on_touch calls it) instead of hit+action."""
+    H = 28
+    def __init__(self, app, label, skey=None):
+        super().__init__(app); self.label = label; self.skey = skey; self.y = 0
+    def place(self, y): self.y = y; return self
+    def in_row(self, ry): return self.y <= ry < self.y + self.H
+    def on_touch(self, x, y):
+        if not self.in_row(y): return False
+        self.act(x); return True
+    def act(self, x): pass
+    def draw_label(self, d, th):
+        d.text((14, self.y+8), self.label, font=th.mono[11], fill=th.INK)
+    def _commit(self, nv):
+        self.app.settings.set(self.skey, str(nv)); self.app.apply_setting(self.skey, str(nv)); self._inv()
+
+class ToggleRow(Row):
+    def __init__(self, app, label, skey, confirm=False, msg_on=None, msg_off=None):
+        super().__init__(app, label, skey)
+        self.confirm = confirm; self.msg_on = msg_on; self.msg_off = msg_off
+    def on(self): return str(self.app.settings.get(self.skey)) in ("1", "true", "on")
+    def act(self, x):
+        nv = "0" if self.on() else "1"
+        if self.confirm:
+            self.app.open_modal(Confirm(self.app, (self.msg_on if nv == "1" else self.msg_off) or "Apply?",
+                                        lambda: self._commit(nv)))
+        else:
+            self._commit(nv)
+    def draw(self, d, th):
+        self.draw_label(d, th)
+        on = self.on(); w, h = 46, 18; x1 = W-14; x0 = x1-w; y0 = self.y+5
+        d.rounded_rectangle((x0, y0, x1, y0+h), radius=9, fill=th.CYAN if on else th.BTN, outline=th.BTN_BD)
+        kx = (x1-16) if on else (x0+2)
+        d.ellipse((kx, y0+2, kx+14, y0+16), fill=th.BG if on else th.DIM)
+
+class StepperRow(Row):
+    """[-] value [+] over a discrete option list. wrap = cyclic picker; confirm = gated by modal."""
+    def __init__(self, app, label, skey, options, fmt=None, wrap=False, confirm=False):
+        super().__init__(app, label, skey)
+        self.options = list(options); self.fmt = fmt or (lambda v: str(v))
+        self.wrap = wrap; self.confirm = confirm
+    def index(self):
+        v = str(self.app.settings.get(self.skey))
+        return self.options.index(v) if v in self.options else 0
+    def act(self, x):
+        i = self.index(); n = len(self.options)
+        if x >= W-34: j = i+1
+        elif x <= 136: j = i-1
+        else: return
+        j = (j % n) if self.wrap else max(0, min(n-1, j))
+        if j == i: return
+        nv = self.options[j]
+        if self.confirm:
+            self.app.open_modal(Confirm(self.app, "Set %s to %s?" % (self.label, self.fmt(nv)),
+                                        lambda: self._commit(nv)))
+        else:
+            self._commit(nv)
+    def draw(self, d, th):
+        self.draw_label(d, th)
+        y0 = self.y+5
+        d.rounded_rectangle((116, y0, 136, y0+18), radius=4, fill=th.BTN, outline=th.BTN_BD)
+        ctext(d, 126, y0+3, "-", th.bold[13], th.CYAN)
+        d.rounded_rectangle((W-34, y0, W-14, y0+18), radius=4, fill=th.BTN, outline=th.BTN_BD)
+        ctext(d, W-24, y0+3, "+", th.bold[13], th.CYAN)
+        ctext(d, (138 + W-38)/2, self.y+8, self.fmt(self.options[self.index()]), th.mono[12], th.INK)
+
+class SliderRow(Row):
+    """tap-to-set slider over [lo, hi]. Applies live (brightness)."""
+    def __init__(self, app, label, skey, lo, hi):
+        super().__init__(app, label, skey); self.lo = lo; self.hi = hi
+        self.x0 = 112; self.x1 = W-42
+    def cur(self):
+        try: return max(self.lo, min(self.hi, int(float(self.app.settings.get(self.skey)))))
+        except Exception: return self.lo
+    def act(self, x):
+        frac = max(0.0, min(1.0, (x - self.x0) / (self.x1 - self.x0)))
+        self._commit(int(round(self.lo + frac * (self.hi - self.lo))))
+    def draw(self, d, th):
+        self.draw_label(d, th)
+        v = self.cur(); yc = self.y+14
+        d.line((self.x0, yc, self.x1, yc), fill=th.GRID, width=2)
+        kx = self.x0 + (v - self.lo) / (self.hi - self.lo) * (self.x1 - self.x0)
+        d.line((self.x0, yc, kx, yc), fill=th.CYAN, width=2)
+        d.ellipse((kx-4, yc-4, kx+4, yc+4), fill=th.INK)
+        d.text((W-36, self.y+8), str(v), font=th.mono[11], fill=th.SUB)
+
+class ActionRow(Row):
+    def __init__(self, app, label, action):
+        super().__init__(app, label); self.action = action
+    def act(self, x): self.action()
+    def draw(self, d, th):
+        self.draw_label(d, th)
+        d.text((W-22, self.y+6), "›", font=th.bold[15], fill=th.CYAN)
+
+
+# ───────────────────────── Modal overlays ─────────────────────────
+class Confirm:
+    """message + Cancel / OK. Captures all touches; closes itself on either button."""
+    def __init__(self, app, msg, on_ok):
+        self.app = app; self.msg = msg; self.on_ok = on_ok
+        self.cancel = (30, 190, W/2-4, 220); self.ok = (W/2+4, 190, W-30, 220)
+    def _in(self, r, x, y): return r[0] <= x <= r[2] and r[1] <= y <= r[3]
+    def on_touch(self, x, y):
+        if self._in(self.ok, x, y): self.app.close_modal(); self.on_ok()
+        elif self._in(self.cancel, x, y): self.app.close_modal()
+        return True                                       # modal swallows every touch
+    def draw(self, d, th):
+        d.rectangle((0, 0, W-1, H-1), fill=th.BG)
+        d.rounded_rectangle((20, 96, W-20, 236), radius=10, fill=th.PANEL, outline=th.BTN_BD)
+        yy = 118
+        for ln in textwrap.wrap(self.msg, 24):
+            ctext(d, W/2, yy, ln, th.mono[12], th.INK); yy += 18
+        d.rounded_rectangle(self.cancel, radius=8, fill=th.BTN, outline=th.BTN_BD)
+        ctext(d, (self.cancel[0]+self.cancel[2])/2, self.cancel[1]+8, "Cancel", th.bold[12], th.DIM)
+        d.rounded_rectangle(self.ok, radius=8, fill=th.BTN, outline=th.CYAN)
+        ctext(d, (self.ok[0]+self.ok[2])/2, self.ok[1]+8, "OK", th.bold[12], th.CYAN)
+
+class About:
+    """read-only info panel with a single Close button."""
+    def __init__(self, app):
+        self.app = app; self.close = (W/2-40, 236, W/2+40, 266)
+        model = _read("/tmp/sysinfo/model") or _read("/proc/gl-hw-info/model") or "GL-E5800"
+        fw = _read("/etc/glversion") or "—"
+        ip = "—"
+        try:
+            st = _ubus("network.interface.lan", "status", {})
+            ip = next((a.get("address") for a in st.get("ipv4-address", [])), "—")
+        except Exception:
+            pass
+        self.lines = [("Model", model), ("Firmware", fw), ("MudiUI", "v" + MUDI_VERSION), ("LAN", ip)]
+    def on_touch(self, x, y):
+        if self.close[0] <= x <= self.close[2] and self.close[1] <= y <= self.close[3]:
+            self.app.close_modal()
+        return True
+    def draw(self, d, th):
+        d.rectangle((0, 0, W-1, H-1), fill=th.BG)
+        d.rounded_rectangle((20, 70, W-20, 280), radius=10, fill=th.PANEL, outline=th.BTN_BD)
+        ctext(d, W/2, 84, "About", th.bold[15], th.CYAN)
+        yy = 118
+        for label, val in self.lines:
+            d.text((40, yy), label, font=th.mono[10], fill=th.DIM)
+            d.text((110, yy), str(val), font=th.mono[11], fill=th.INK); yy += 26
+        d.rounded_rectangle(self.close, radius=8, fill=th.BTN, outline=th.CYAN)
+        ctext(d, W/2, self.close[1]+8, "Close", th.bold[12], th.CYAN)
+
+
 # ───────────────────────── Pages ─────────────────────────
 class Page:
     title = "Page"
@@ -409,8 +607,9 @@ class Page:
     def draw(self, d, th): [w.draw(d, th) for w in self.widgets]
     def on_touch(self, x, y):
         for w in self.widgets:
+            if hasattr(w, "on_touch") and w.on_touch(x, y): return True     # settings rows
             if hasattr(w, "hit") and w.hit(x, y) and getattr(w, "action", None):
-                w.action(); return True
+                w.action(); return True                                     # buttons
         return False
 
 class SignalPage(Page):
@@ -459,6 +658,35 @@ class EthernetPage(Page):
                            [("PORT", "eth.port"), ("CLIENTS", "eth.clients"), ("PROTO", "eth.proto")]))
         self.add(Trace(a, "eth.rxn", y=270, h=36))
 
+class SettingsPage(Page):
+    title = "Settings"
+    PAGE_NAMES = ("Signal", "WiFi", "System", "Eth")
+    TIMEOUTS = {"0": "Off", "15": "15s", "30": "30s", "60": "1m", "300": "5m"}
+    def build(self):
+        a = self.app
+        self.add(Banner(a, "Settings"))
+        rows = [
+            SliderRow(a, "Brightness", "brightness", 20, 120),
+            StepperRow(a, "Screen timeout", "screen_timeout", ["0", "15", "30", "60", "300"],
+                       fmt=lambda v: self.TIMEOUTS.get(v, v)),
+            ToggleRow(a, "Awake on charge", "stay_awake_charging"),
+            StepperRow(a, "Default page", "default_page", ["0", "1", "2", "3"],
+                       fmt=lambda v: self.PAGE_NAMES[int(v)], wrap=True),
+            ToggleRow(a, "Lock band n71", "band_lock", confirm=True,
+                      msg_on="Lock modem to band n71?", msg_off="Restore all NR bands?"),
+            StepperRow(a, "Network mode", "net_mode", ["auto", "5g", "lte"],
+                       fmt=lambda v: {"auto": "Auto", "5g": "5G", "lte": "LTE"}[v],
+                       wrap=True, confirm=True),
+            StepperRow(a, "Long-press", "longpress", ["1.0", "1.3", "1.6", "2.0"],
+                       fmt=lambda v: v + "s"),
+            ActionRow(a, "Return to stock UI", a.request_toggle),
+            ToggleRow(a, "Start on boot", "start_on_boot"),
+            ActionRow(a, "About", lambda: a.open_modal(About(a))),
+        ]
+        y = 30
+        for r in rows:
+            self.add(r.place(y)); y += Row.H
+
 
 # ───────────────────────── App ─────────────────────────
 class App:
@@ -468,11 +696,83 @@ class App:
         self.registry = {k: s for s in sources for k in s.provides}
         self.pages = []; self.idx = 0; self.current = None; self.theme = Theme
         self.service = False                              # True when launched by the procd service
-        self.paused = False                              # True while gl_screen owns the panel
+        self.paused = False                               # True while gl_screen owns the panel
         self._toggle_req = threading.Event()
+        self.settings = Settings()
+        self.modal = None                                 # Confirm / About overlay, or None
+        self.blanked = False; self._wokeup = False; self.last_touch = time.time()
 
     def invalidate(self): self.wake.set()
 
+    # ---- modal overlay ----
+    def open_modal(self, m): self.modal = m; self.wake.set()
+    def close_modal(self): self.modal = None; self.wake.set()
+    def request_toggle(self): self._toggle_req.set()      # menu path to the stock-UI toggle
+
+    # ---- settings effects ----
+    def _brightness(self):
+        try: return int(float(self.settings.get("brightness")))
+        except Exception: return 90
+    def _set_brightness(self, v):
+        try:
+            with open(BL_DIR + "/brightness", "w") as f: f.write(str(int(v)))
+        except Exception: pass
+    def _active_slot(self):
+        try:
+            m = _ubus("cellular.modem", "status", {"bus": BUS})
+            s = m.get("current_sim_slot")
+            if s is None and "modems" in m: s = m["modems"][0].get("current_sim_slot")
+            return int(s or 1)
+        except Exception:
+            return 1
+    def _apply_modem(self, skey, val):
+        try:
+            slot = self._active_slot()
+            if skey == "band_lock":
+                if val == "1":
+                    _at('AT+QNWPREFCFG="nr5g_band",71', slot); _at('AT+QNWPREFCFG="nsa_nr5g_band",71', slot)
+                else:
+                    _at('AT+QNWPREFCFG="nr5g_band",%s' % NR5G_BANDS_ALL, slot)
+                    _at('AT+QNWPREFCFG="nsa_nr5g_band",%s' % NSA_BANDS_ALL, slot)
+            elif skey == "net_mode":
+                _at('AT+QNWPREFCFG="mode_pref",%s' % MODE_AT.get(val, "AUTO"), slot)
+        except Exception as e:
+            print("modem apply", skey, "failed:", e)
+    def apply_setting(self, skey, val):
+        if skey in ("band_lock", "net_mode"):             # AT writes are slow -> off the touch thread
+            threading.Thread(target=self._apply_modem, args=(skey, val), daemon=True).start(); return
+        try:
+            if skey == "brightness":
+                if not self.blanked: self._set_brightness(int(val))
+            elif skey == "start_on_boot":
+                cmd = "enable" if val == "1" else "disable"
+                for svc in ("mudi", "mudi-watch"): subprocess.Popen(["/etc/init.d/" + svc, cmd])
+            # screen_timeout / stay_awake_charging / default_page / longpress: read where used
+        except Exception as e:
+            print("apply", skey, "failed:", e)
+
+    # ---- idle blank ----
+    def _timeout_secs(self):
+        try: return int(self.settings.get("screen_timeout") or 0)
+        except Exception: return 0
+    def _stay_awake_active(self):
+        if str(self.settings.get("stay_awake_charging")) != "1": return False
+        try: return bool(_ubus("mcu", "status", {}).get("charging_status", 0))
+        except Exception: return False
+    def _blank(self):
+        self.blanked = True
+        for node, v in ((BL_DIR + "/bl_power", "1"), (BL_DIR + "/brightness", "0")):
+            try:
+                with open(node, "w") as f: f.write(v)
+            except Exception: pass
+    def _unblank(self):
+        for node, v in ((BL_DIR + "/brightness", str(self._brightness())), (BL_DIR + "/bl_power", "0")):
+            try:
+                with open(node, "w") as f: f.write(v)
+            except Exception: pass
+        self.blanked = False; self.wake.set()
+
+    # ---- panel takeover / handoff (gl_screen) ----
     def _take_panel(self):                               # take the framebuffer with NO overlap
         # gl_screen takes ~4s to exit on `stop`, and it keeps drawing the whole time -> both UIs
         # fight. So freeze its drawing INSTANTLY (safe here: we're killing it, not resuming), then
@@ -503,7 +803,10 @@ class App:
         self._flash()
         self.paused = not self.paused
         if self.paused: self._release_panel()            # -> gl_screen (notice + cold start; it works)
-        else: self._take_panel(); self.wake.set()        # -> MudiUI (instant, resident)
+        else:                                            # -> MudiUI (instant, resident)
+            if self.blanked: self._unblank()
+            self._take_panel(); self._set_brightness(self._brightness()); self.wake.set()
+
     def subscribe(self, key, cb):
         s = self.registry.get(key)
         if s: s.subscribe(key, cb)                       # unknown key -> no-op (shows placeholder)
@@ -534,14 +837,20 @@ class App:
                     if e.code in (ecodes.ABS_X, ecodes.ABS_MT_POSITION_X): x = e.value
                     elif e.code in (ecodes.ABS_Y, ecodes.ABS_MT_POSITION_Y): y = e.value
                 elif e.type == ecodes.EV_KEY and e.code == ecodes.BTN_TOUCH:
-                    if e.value == 1: down = True; x0, y0 = x, y
+                    if e.value == 1:
+                        down = True; x0, y0 = x, y; self.last_touch = time.time()
+                        if self.blanked: self._unblank(); self._wokeup = True    # wake on touch-down
                     elif e.value == 0 and down:
-                        down = False; dx = x - x0
-                        if self.paused: continue                           # gl_screen owns the UI now
+                        down = False; self.last_touch = time.time()
+                        if self._wokeup: self._wokeup = False; continue          # waking touch: swallow
+                        if self.paused: continue                                 # gl_screen owns the UI now
+                        if self.modal is not None:
+                            self.modal.on_touch(x, y); self.wake.set(); continue # tap routes to modal
+                        dx = x - x0
                         if abs(dx) > 50 and abs(dx) > abs(y - y0):
-                            self.show(self.idx + (1 if dx < 0 else -1))   # swipe -> next/prev
+                            self.show(self.idx + (1 if dx < 0 else -1))          # swipe -> next/prev
                         else:
-                            self.current.on_touch(x, y)                    # tap -> element
+                            self.current.on_touch(x, y)                          # tap -> element
         except Exception as e:
             print("touch disabled:", e)
 
@@ -555,7 +864,8 @@ class App:
 
     def run(self, pages, start=0, duration=None):
         self.pages = pages
-        self._take_panel()                                # freeze gl_screen, snapshot its frame, take panel
+        self._take_panel()                                # freeze gl_screen, take panel
+        self._set_brightness(self._brightness())          # apply configured brightness
         for s in (signal.SIGINT, signal.SIGTERM):
             signal.signal(s, lambda *_: self.stop.set())
         signal.signal(signal.SIGUSR1, lambda *_: self._toggle_req.set())   # long-press toggle
@@ -571,11 +881,20 @@ class App:
                         self.wake.wait(0.2)
                         if duration and time.time()-t0 > duration: break
                         continue
+                    if self.blanked:                       # backlight off; wait for a touch to wake
+                        self.wake.wait(0.3)
+                        if duration and time.time()-t0 > duration: break
+                        continue
+                    to = self._timeout_secs()              # idle-blank
+                    if to > 0 and self.modal is None and time.time()-self.last_touch > to:
+                        if self._stay_awake_active(): self.last_touch = time.time()
+                        else: self._blank(); continue
                     anim = self.current.animate()
                     if first or self.wake.is_set() or anim or prev_anim:
                         self.wake.clear()
                         img = Image.new("RGB", (W, H), th.BG); d = ImageDraw.Draw(img)
                         self.current.draw(d, th); self._dots(d, th)
+                        if self.modal is not None: self.modal.draw(d, th)
                         fb.seek(0); fb.write(pack565(img)); first = False
                     prev_anim = anim
                     if duration and time.time()-t0 > duration: break
@@ -600,14 +919,21 @@ def _mock(which):
             "eth.speed":"DOWN","eth.level":0,"eth.link":"DOWN","eth.port":"eth0","eth.ip":"192.168.8.1",
             "eth.rx":"0 KB/s","eth.tx":"0 KB/s","eth.rxn":0,"eth.clients":0,"eth.proto":"static"}
     class MockApp(App):
-        def __init__(self): self.wake=threading.Event(); self.theme=Theme; self.current=None; self.pages=[]; self.idx=0
+        def __init__(self):
+            self.wake=threading.Event(); self.theme=Theme; self.current=None; self.pages=[]; self.idx=0
+            self.settings=Settings(); self.modal=None
         def invalidate(self): pass
         def subscribe(self, key, cb):
             if key in DATA: cb(DATA[key])
         def unsubscribe(self, *a): pass
         def request_stock(self): pass
+        def request_toggle(self): pass
+        def apply_setting(self, *a): pass
+        def open_modal(self, m): self.modal = m
+        def close_modal(self): self.modal = None
     a = MockApp()
-    page = {"wifi": WifiPage, "system": SystemPage, "eth": EthernetPage}.get(which, SignalPage)(a)
+    page = {"wifi": WifiPage, "system": SystemPage, "eth": EthernetPage,
+            "settings": SettingsPage}.get(which, SignalPage)(a)
     a.pages = [page]; page.wire()
     for _ in range(40): page.animate()
     import math                                          # synthetic history so graphs render in preview
@@ -622,12 +948,15 @@ def _mock(which):
 
 def main():
     if "--mock" in sys.argv:
-        which = next((w for w in ("wifi", "system", "eth") if w in sys.argv), "signal")
+        which = next((w for w in ("wifi", "system", "eth", "settings") if w in sys.argv), "signal")
         _mock(which); return
     dur = next((float(a) for a in sys.argv[1:] if a.replace(".", "").isdigit()), None)
     app = App([CellularSource(), WifiSource(), SystemSource(), EthernetSource()])
     app.service = "--service" in sys.argv
-    app.run([SignalPage(app), WifiPage(app), SystemPage(app), EthernetPage(app)], start=0, duration=dur)
+    try: start = int(app.settings.get("default_page"))
+    except Exception: start = 0
+    app.run([SignalPage(app), WifiPage(app), SystemPage(app), EthernetPage(app), SettingsPage(app)],
+            start=start, duration=dur)
 
 if __name__ == "__main__":
     main()

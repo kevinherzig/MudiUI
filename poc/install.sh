@@ -98,6 +98,17 @@ for row in $FILES; do
   printf '    %s -> %s\n' "$src" "$dest"
 done
 
+# --- 3b. default settings (uci) — never clobber existing user settings ------
+if [ -f "$SRC_DIR/mudi.config" ]; then
+  if [ -f /etc/config/mudi ]; then
+    say "/etc/config/mudi exists — keeping your settings"
+  else
+    cp "$SRC_DIR/mudi.config" /etc/config/mudi
+    say "installed default settings -> /etc/config/mudi"
+  fi
+fi
+# /etc/config/* is already in the default sysupgrade backup, so no sysupgrade.conf entry needed.
+
 # --- 4. enable services + persist across firmware upgrades ------------------
 say "Enabling services"
 "$INIT_DIR/mudi" enable
