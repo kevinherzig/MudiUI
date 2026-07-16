@@ -142,7 +142,7 @@ preserves both of today's looks exactly and stays honest about what the curve is
 |---|---|---|
 | value | `y+12` | `mono[32]` |
 | unit | `y+50` | `mono[11]` |
-| `series_label` (only when set) | `y+68` | `mono[9]`, `DIM` |
+| `series_label` (only when set) | `y+66` | `mono[9]`, `DIM` |
 | hi | `y+80` | `mono[9]` / `mono[11]` |
 | lo | `y+96` | `mono[9]` / `mono[11]` |
 
