@@ -16,7 +16,7 @@ Reused widgets prove the consistency thesis: WifiPage adds NO new widget classes
 The key=... bindings below are exactly what the future JSON layer will declare.
 
 Run on the Mudi:  python3 mudi.py [seconds]   (no arg = until STOCK UI tapped)
-Preview a frame:  python3 mudi.py --mock [signal|wifi|system|eth|settings]
+Preview a frame:  python3 mudi.py --mock [signal|wifi|system|eth|settings] [hero|arc]
 """
 import sys, os, time, json, subprocess, threading, signal, re, textwrap
 import numpy as np
@@ -400,9 +400,12 @@ class HeroGraph(Gauge):
             if self.series_label:                        # the curve isn't the headline -> name it
                 d.text((x, y+66), self.series_label, font=th.mono[9], fill=th.DIM)
             d.text((x, y+80),  "hi", font=th.mono[9], fill=th.DIM)
-            d.text((x+22, y+80), "%d" % round(hi), font=th.mono[11], fill=th.SUB)
+            # %g (not %d): series bound here range from sub-1 floats (sys.load) to signed ints
+            # (signal.rsrp) to small positive ints (eth.rxn) — %d truncated floats to 0/1. %g only
+            # goes scientific at >=7 significant digits, far above any series this binds today.
+            d.text((x+22, y+80), "%g" % round(hi, 2), font=th.mono[11], fill=th.SUB)
             d.text((x, y+96),  "lo", font=th.mono[9], fill=th.DIM)
-            d.text((x+22, y+96), "%d" % round(lo), font=th.mono[11], fill=th.SUB)
+            d.text((x+22, y+96), "%g" % round(lo, 2), font=th.mono[11], fill=th.SUB)
             d.rectangle((gx, gy, gx+gw, gy+gh), outline=th.GRID)
             for frac in (0.25, 0.5, 0.75):                 # faint gridlines
                 yy = gy + gh*frac; d.line((gx+1, yy, gx+gw-1, yy), fill=(18, 22, 30))
@@ -677,7 +680,7 @@ class ScrollPage(Page):
     def scroll_to(self, v):
         nv = max(0, min(self.max_scroll(), v))
         if nv != self.scroll_y:
-            self.scroll_y = nv; self.app.wake.set()
+            self.scroll_y = nv; self.app.invalidate()
 
     def wire(self):   [w.wire() for w in self.widgets + self.rows]
     def unwire(self): [w.unwire() for w in self.widgets + self.rows]
@@ -1108,22 +1111,17 @@ class MockApp(App):
        Used by --mock previews and by tests. apply_setting is a no-op so a preview can't fire
        AT commands at a modem that isn't there."""
     def __init__(self, data=None):
+        super().__init__([])                             # tolerates an empty source list, no threads
         self.data = MOCK_DATA if data is None else data
-        self.wake = threading.Event(); self.theme = Theme
-        self.current = None; self.pages = []; self.idx = 0
-        self.settings = Settings(); self.modal = None
-    def invalidate(self): pass
     def subscribe(self, key, cb):
         if key in self.data: cb(self.data[key])
     def unsubscribe(self, *a): pass
-    def request_stock(self): pass
+    def request_stock(self): pass                         # would spawn a subprocess on the real App
     def request_toggle(self): pass
-    def apply_setting(self, *a): pass
-    def open_modal(self, m): self.modal = m
-    def close_modal(self): self.modal = None
+    def apply_setting(self, *a): pass                      # real one fires AT commands at absent hardware
 
 
-def _mock(which, style="hero"):
+def _mock(which, style="hero", outdir="/tmp"):
     a = MockApp()
     a.settings.vals["graph_style"] = style
     page = {"wifi": WifiPage, "system": SystemPage, "eth": EthernetPage,
@@ -1133,12 +1131,18 @@ def _mock(which, style="hero"):
     import math                                          # synthetic history so graphs render
     for wdg in page.widgets:
         if hasattr(wdg, "hist"):                         # duck-typed: any new style seeds too
-            b = getattr(wdg, "value", None)
+            # Seed from the DECLARED SERIES, not the headline value — SystemPage/EthernetPage
+            # headline a different key than they graph (see MetricPage docstring), so seeding
+            # from wdg.value would preview e.g. battery-scale noise under a LOAD label.
+            key = getattr(wdg, "k_series", None) or getattr(wdg, "k", None)
+            b = MOCK_DATA.get(key) if key else None
             if not isinstance(b, (int, float)): b = -100
-            wdg.hist = [b + 7*math.sin(i*0.35) + 3*math.sin(i*0.85) for i in range(64)]
+            amp = max(abs(b) * 0.07, 0.05)               # scale noise to the series' own magnitude
+            wdg.hist = [b + amp*math.sin(i*0.35) + amp*0.4*math.sin(i*0.85) for i in range(64)]
     img = Image.new("RGB", (W, H), Theme.BG); d = ImageDraw.Draw(img)
     page.draw(d, Theme, img)                             # img: ScrollPage composites onto it
-    out = "/tmp/mudi_%s_%s.png" % (which, style); img.save(out); print("wrote", out)
+    out = "%s/mudi_%s_%s.png" % (outdir, which, style); img.save(out); print("wrote", out)
+    return page
 
 def main():
     if "--mock" in sys.argv:

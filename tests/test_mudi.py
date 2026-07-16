@@ -2,8 +2,11 @@
 
 Run from the repo root:  python3 -m unittest discover -s tests -v
 """
+import contextlib
+import io
 import os
 import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -244,6 +247,51 @@ class TestMetricPageRebuild(unittest.TestCase):
         a.settings.vals["graph_style"] = "arc"
         a._rebuild_metric_pages()
         self.assertEqual([type(p) for p in a.pages], before)
+
+
+class TrackingApp(mudi.MockApp):
+    """Counts live (subscribe - unsubscribe) calls per key. MockApp's own subscribe/unsubscribe
+       are untracked no-ops, so nothing today would notice a page dropped from self.pages while
+       still wired -- this makes that leak visible as a nonzero net()."""
+    def __init__(self):
+        super().__init__()
+        self.live = {}
+    def subscribe(self, key, cb):
+        self.live[key] = self.live.get(key, 0) + 1
+        super().subscribe(key, cb)
+    def unsubscribe(self, key, cb):
+        self.live[key] = self.live.get(key, 0) - 1
+        super().unsubscribe(key, cb)
+    def net(self):
+        return sum(self.live.values())
+
+
+class TestSubscriberBalance(unittest.TestCase):
+    def app(self):
+        a = TrackingApp()
+        a.pages = [mudi.SignalPage(a), mudi.WifiPage(a), mudi.SystemPage(a),
+                   mudi.EthernetPage(a), mudi.SettingsPage(a)]
+        a.idx = 0
+        a.current = a.pages[0]
+        a.current.wire()                                  # only current is ever wired, mirrors App.show()
+        return a
+
+    def test_rebuild_leaves_zero_live_subscriptions_when_a_metricpage_is_current(self):
+        # The rebuilt page is legitimately wired afterwards, so net() alone would be nonzero even
+        # in the healthy case. Release that final page too: what's left over is exactly whatever
+        # the DISCARDED old page failed to unwire before being dropped.
+        a = self.app()
+        a.settings.vals["graph_style"] = "arc"
+        a._rebuild_metric_pages()
+        a.current.unwire()
+        self.assertEqual(a.net(), 0, a.live)
+
+    def test_full_navigation_cycle_leaves_zero_live_subscriptions(self):
+        a = self.app()
+        for i in range(1, len(a.pages) + 1):
+            a.show(i)                                     # walks every page; wraps to 0 at the end
+        a.current.unwire()                                # release the page left wired after the loop
+        self.assertEqual(a.net(), 0, a.live)
 
 
 class TestApplySettingRouting(unittest.TestCase):
@@ -511,11 +559,34 @@ class TestGesture(unittest.TestCase):
 
 class TestMockPreview(unittest.TestCase):
     def test_mock_writes_a_png_per_page_and_style(self):
-        for style in ("hero", "arc"):
-            for which in ("signal", "wifi", "system", "eth", "settings"):
-                mudi._mock(which, style)
-                path = "/tmp/mudi_%s_%s.png" % (which, style)
-                self.assertTrue(os.path.exists(path), path)
+        # Hermetic: a fresh TemporaryDirectory means a stale /tmp/mudi_*.png from an earlier run
+        # can't make this pass vacuously. stdout is suppressed so the suite's output stays clean
+        # of _mock's "wrote ..." lines.
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+            for style in ("hero", "arc"):
+                for which in ("signal", "wifi", "system", "eth", "settings"):
+                    mudi._mock(which, style, outdir=d)
+                    path = os.path.join(d, "mudi_%s_%s.png" % (which, style))
+                    self.assertTrue(os.path.exists(path), path)
+
+    def test_history_seeding_uses_the_declared_series_not_the_headline_value(self):
+        # SystemPage headlines batt.pct (~100) but graphs sys.load (~1.39) -- seeding from the
+        # headline would leave hist clustered near 100 under a "LOAD" label. Seeding from the
+        # declared series (HeroGraph.k_series) must put hist near sys.load's own magnitude.
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+            page = mudi._mock("system", "hero", outdir=d)
+        gauge = only(page, mudi.Gauge)
+        # wire()'s replay alone puts ONE real sys.load sample into hist (MockApp.subscribe calls
+        # back immediately) -- that single point would satisfy the magnitude checks below even
+        # with the seeding line disabled, so pin the length too: only the seeding loop (range(64))
+        # produces 64 points.
+        self.assertEqual(len(gauge.hist), 64, gauge.hist)
+        batt = mudi.MOCK_DATA["batt.pct"]                 # headline (~100) -- must NOT be near this
+        load = mudi.MOCK_DATA["sys.load"]                 # declared series (~1.39) -- must be near this
+        self.assertTrue(all(abs(v - batt) > 10 for v in gauge.hist),
+                        "hist looks seeded from the headline (batt.pct), not sys.load: %r" % gauge.hist)
+        self.assertTrue(all(abs(v - load) < 1 for v in gauge.hist),
+                        "hist not clustered around sys.load: %r" % gauge.hist)
 
     def test_history_seeding_finds_any_widget_with_a_hist(self):
         a = mudi.MockApp()

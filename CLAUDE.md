@@ -129,9 +129,9 @@ Gauges ease at 30 fps only while animating.
 
 ### Current UI state
 - **Four pages / four sources live:**
-  - `SignalPage`←`CellularSource` — `signal.*`, `cell.*`, `net.mode`, `sim.carrier/slot`.
-    **Uses the new `HeroGraph`** (big driving value + hi/lo, auto-scaled area chart) instead of the
-    arc — the circle ate too much real estate.
+  - `SignalPage`←`CellularSource` — `signal.*`, `cell.*`, `net.mode`, `sim.carrier/slot`. Headlines
+    and graphs the same key (`signal.rsrp`), so it needs no `series_label` (unlike System/Ethernet
+    below, which headline a different metric than they graph).
   - `WifiPage`←`WifiSource` — `iwinfo devices`→`iwinfo info` per device (Client=uplink vs
     Master=AP) + `gl-clients list` online count. This box runs as a **repeater** (`wlan4` station
     uplink, `wlan0` local AP). `_san()` strips emoji the panel TTFs lack.
@@ -292,5 +292,7 @@ MudiUI/
 - ⏳ **Live-test the installer** on the Mudi (written but unrun); confirm idempotent re-run, then
   uninstall → gl_screen returns.
 - ⏳ **Cold-boot test** the boot-time service start (done at the device, not remotely).
+- ⏳ **On-device check** of graph styles + Settings scroll — rendered in `--mock` only so far;
+  `Gesture.TOL` (8px) may need tuning with a real finger.
 - 🔭 Future: JSON scripting layer over the existing declarative widget bindings; optional
   `libmudi` C pack; ipk packaging.
