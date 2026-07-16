@@ -127,7 +127,7 @@ class Settings:
     PKG = "mudi"; SEC = "main"
     DEFAULTS = {"brightness": "90", "screen_timeout": "30", "stay_awake_charging": "1",
                 "default_page": "0", "band_lock": "0", "net_mode": "auto",
-                "longpress": "1.6", "start_on_boot": "1"}
+                "longpress": "1.6", "start_on_boot": "1", "graph_style": "hero"}
 
     def __init__(self):
         self.vals = dict(self.DEFAULTS); self.load()
@@ -327,13 +327,37 @@ class Banner(Widget):
         d.text((12, 6), self.text, font=th.bold[15], fill=th.INK)
         d.line((10, 25, W-10, 25), fill=th.GRID, width=1)
 
-class ArcGauge(Widget):
-    """270° gauge: value_key shown in center, level_key (0..5) drives the arc."""
-    def __init__(self, app, value, level, unit, cx=120, cy=92, r=50):
+class Gauge(Widget):
+    """Base for the interchangeable page-hero styles (see GAUGE_STYLES).
+
+       A style is not just a widget — it declares the slot it occupies, where the page's stack
+       resumes below it (STACK_Y), and whether it already shows history. If it doesn't, the page
+       adds a Trace to compensate. That contract is what lets MetricPage stay style-agnostic.
+
+       The ctor is uniform across styles: each ignores the bindings it doesn't use (Hero ignores
+       level, Arc ignores series), which is what keeps pages free of style-specific config."""
+    TOP = 32; HEIGHT = 118; STACK_Y = 172
+    SUPPLIES_HISTORY = False
+    LABEL = "Gauge"                                     # shown in the settings stepper
+
+    def __init__(self, app, value, level=None, series=None, unit="", series_label=None):
         super().__init__(app)
-        self.k_value, self.k_level, self.unit = value, level, unit
+        self.k_value, self.k_level, self.k_series = value, level, series
+        self.unit, self.series_label = unit, series_label
+        self.value = None
+
+class ArcGauge(Gauge):
+    """270° gauge: value_key shown in center, level_key (0..5) drives the arc.
+       Shows no history, so pages using it get a Trace."""
+    TOP = 42; HEIGHT = 100; STACK_Y = 150               # arc spans y42..142 (cy=92, r=50)
+    SUPPLIES_HISTORY = False
+    LABEL = "Arc"
+
+    def __init__(self, app, value, level=None, series=None, unit="", series_label=None,
+                 cx=120, cy=92, r=50):
+        super().__init__(app, value, level, series, unit, series_label)
         self.cx, self.cy, self.r = cx, cy, r
-        self.value=None; self.target=0.0; self.frac=0.0
+        self.target = 0.0; self.frac = 0.0
     def wire(self):
         self._sub(self.k_value, lambda v: setattr(self, "value", v))
         self._sub(self.k_level, lambda v: setattr(self, "target", max(0.0, min(1.0, v/5.0))))
@@ -348,14 +372,19 @@ class ArcGauge(Widget):
         ctext(d, cx, cy-22, str(self.value) if self.value is not None else "--", th.mono[32], th.INK)
         ctext(d, cx, cy+15, self.unit, th.mono[11], th.DIM)
 
-class HeroGraph(Widget):
+class HeroGraph(Gauge):
     """Hero: big current value + hi/lo range (left) and a large auto-scaled area chart (right).
-       Replaces the arc gauge — shows trend not just level, and gives the graph the real estate."""
-    def __init__(self, app, value, series, unit, x=12, y=32, w=W-24, h=118):
-        super().__init__(app)
-        self.k_value, self.k_series, self.unit = value, series, unit
+       Shows trend not just level, and gives the graph the real estate. Supplies its own history,
+       so pages using it need no Trace."""
+    TOP = 32; HEIGHT = 118; STACK_Y = 172
+    SUPPLIES_HISTORY = True
+    LABEL = "Hero"
+
+    def __init__(self, app, value, level=None, series=None, unit="", series_label=None,
+                 x=12, y=TOP, w=W-24, h=HEIGHT):
+        super().__init__(app, value, level, series, unit, series_label)
         self.x, self.y, self.w, self.h = x, y, w, h
-        self.value=None; self.hist=[]
+        self.hist = []
     def wire(self):
         self._sub(self.k_value, lambda v: setattr(self, "value", v))
         self._sub(self.k_series, self._push)
@@ -383,6 +412,10 @@ class HeroGraph(Widget):
             ex, ey = pts[-1]; d.ellipse((ex-3, ey-3, ex+3, ey+3), fill=th.INK)
         else:
             d.rectangle((gx, gy, gx+gw, gy+gh), outline=th.GRID)
+
+# slug -> style class. Insertion order drives the settings stepper. A new style costs one class
+# and one entry here — pages never change.
+GAUGE_STYLES = {"hero": HeroGraph, "arc": ArcGauge}
 
 class StatsRow(Widget):
     """two labelled values side by side: pairs = [(label, key), ...]."""
@@ -710,6 +743,9 @@ class App:
     def request_toggle(self): self._toggle_req.set()      # menu path to the stock-UI toggle
 
     # ---- settings effects ----
+    def gauge_cls(self):                                 # selected hero style; junk value -> Hero
+        return GAUGE_STYLES.get(self.settings.get("graph_style"), HeroGraph)
+
     def _brightness(self):
         try: return int(float(self.settings.get("brightness")))
         except Exception: return 90
@@ -907,30 +943,41 @@ class App:
 
 
 # ───────────────────────── entry ─────────────────────────
+MOCK_DATA = {"sim.carrier":"T-Mobile","sim.slot":"1","net.mode":"NR5G-SA",
+             "signal.rsrp":-100,"signal.rsrq":"-13 dB","signal.sinr":"1 dB","signal.level":4,
+             "cell.id":"187461017","cell.band":"n25","cell.freq":"1981 MHz","cell.bw":"20 MHz",
+             "wifi.ssid":"Sun","wifi.mode":"RPT","wifi.band":"5 GHz","wifi.signal":-38,
+             "wifi.level":5,"wifi.rate":"780 M","wifi.chan":149,"wifi.freq":"5745 MHz",
+             "wifi.width":"VHT80","wifi.ap":"Travel2G","wifi.clients":0,
+             "batt.pct":100,"batt.level":5,"batt.state":"FULL","batt.temp":"30.2°C",
+             "sys.cputemp":"36°C","sys.load":1.39,"sys.ram":"36%","sys.free":"1019 MB",
+             "sys.uptime":"5d 1h",
+             "eth.speed":"DOWN","eth.level":0,"eth.link":"DOWN","eth.port":"eth0",
+             "eth.ip":"192.168.8.1","eth.rx":"0 KB/s","eth.tx":"0 KB/s","eth.rxn":0,
+             "eth.clients":0,"eth.proto":"static"}
+
+
+class MockApp(App):
+    """Off-device App double: serves MOCK_DATA, owns no framebuffer, sources or threads.
+       Used by --mock previews and by tests. apply_setting is a no-op so a preview can't fire
+       AT commands at a modem that isn't there."""
+    def __init__(self, data=None):
+        self.data = MOCK_DATA if data is None else data
+        self.wake = threading.Event(); self.theme = Theme
+        self.current = None; self.pages = []; self.idx = 0
+        self.settings = Settings(); self.modal = None
+    def invalidate(self): pass
+    def subscribe(self, key, cb):
+        if key in self.data: cb(self.data[key])
+    def unsubscribe(self, *a): pass
+    def request_stock(self): pass
+    def request_toggle(self): pass
+    def apply_setting(self, *a): pass
+    def open_modal(self, m): self.modal = m
+    def close_modal(self): self.modal = None
+
+
 def _mock(which):
-    DATA = {"sim.carrier":"T-Mobile","sim.slot":"1","net.mode":"NR5G-SA",
-            "signal.rsrp":-100,"signal.rsrq":"-13 dB","signal.sinr":"1 dB","signal.level":4,
-            "cell.id":"187461017","cell.band":"n25","cell.freq":"1981 MHz","cell.bw":"20 MHz",
-            "wifi.ssid":"Sun","wifi.mode":"RPT","wifi.band":"5 GHz","wifi.signal":-38,
-            "wifi.level":5,"wifi.rate":"780 M","wifi.chan":149,"wifi.freq":"5745 MHz",
-            "wifi.width":"VHT80","wifi.ap":"Travel2G","wifi.clients":0,
-            "batt.pct":100,"batt.level":5,"batt.state":"FULL","batt.temp":"30.2°C",
-            "sys.cputemp":"36°C","sys.load":1.39,"sys.ram":"36%","sys.free":"1019 MB","sys.uptime":"5d 1h",
-            "eth.speed":"DOWN","eth.level":0,"eth.link":"DOWN","eth.port":"eth0","eth.ip":"192.168.8.1",
-            "eth.rx":"0 KB/s","eth.tx":"0 KB/s","eth.rxn":0,"eth.clients":0,"eth.proto":"static"}
-    class MockApp(App):
-        def __init__(self):
-            self.wake=threading.Event(); self.theme=Theme; self.current=None; self.pages=[]; self.idx=0
-            self.settings=Settings(); self.modal=None
-        def invalidate(self): pass
-        def subscribe(self, key, cb):
-            if key in DATA: cb(DATA[key])
-        def unsubscribe(self, *a): pass
-        def request_stock(self): pass
-        def request_toggle(self): pass
-        def apply_setting(self, *a): pass
-        def open_modal(self, m): self.modal = m
-        def close_modal(self): self.modal = None
     a = MockApp()
     page = {"wifi": WifiPage, "system": SystemPage, "eth": EthernetPage,
             "settings": SettingsPage}.get(which, SignalPage)(a)
