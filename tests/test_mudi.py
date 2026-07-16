@@ -358,7 +358,7 @@ class TestScrollDraw(unittest.TestCase):
     def test_scrollbar_appears_only_when_scrollable(self):
         short = self.render(fake_scroll_page(mudi.MockApp(), 3))
         long_ = self.render(fake_scroll_page(mudi.MockApp(), 20))
-        strip = (mudi.W - 3, mudi.ScrollPage.VIEW_TOP, mudi.W, mudi.H)
+        strip = (mudi.W - mudi.ScrollPage.BAR_W, mudi.ScrollPage.VIEW_TOP, mudi.W, mudi.H)
         self.assertTrue(all_bg(short.crop(strip)))
         self.assertFalse(all_bg(long_.crop(strip)))
 
@@ -390,14 +390,34 @@ class TestSettingsPageScrolls(unittest.TestCase):
         self.assertLessEqual(last.y + mudi.Row.H - p.scroll_y, p.VIEW_H)
 
     def test_settings_paints_at_every_scroll_extreme(self):
+        # Asserting against the whole frame would pass even if no row ever rendered, since the
+        # Banner alone paints unconditionally -- crop to the viewport region so this actually
+        # verifies rows painted at each scroll extreme.
         from PIL import Image, ImageDraw
         p = self.page()
         for pos in (0, p.max_scroll() // 2, p.max_scroll()):
             p.scroll_to(pos)
             img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
             p.draw(ImageDraw.Draw(img), mudi.Theme, img)
-            self.assertFalse(all_bg(img),
-                             "settings drew nothing but background at scroll %d" % pos)
+            viewport = img.crop((0, p.VIEW_TOP, mudi.W, mudi.H))
+            self.assertFalse(all_bg(viewport),
+                             "settings viewport drew nothing but background at scroll %d" % pos)
+
+    def test_last_row_is_actually_painted_at_max_scroll(self):
+        """The user-visible property this whole task exists for: "About" (the last row) is
+        really painted at max_scroll(), not just reachable by arithmetic."""
+        from PIL import Image, ImageDraw
+        p = self.page()
+        p.scroll_to(p.max_scroll())
+        img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
+        p.draw(ImageDraw.Draw(img), mudi.Theme, img)
+        # exclude the scrollbar's column: it spans nearly the whole viewport height whenever the
+        # page is scrollable, so including it would make this pass even if the row itself never
+        # painted (verified: dropping the last row from self.rows still left the full-width crop
+        # non-background, purely from the scrollbar).
+        band = img.crop((0, mudi.H - mudi.Row.H, mudi.W - mudi.ScrollPage.BAR_W, mudi.H))
+        self.assertFalse(all_bg(band),
+                         "last row's band at the bottom of the viewport is unpainted background")
 
 
 if __name__ == "__main__":

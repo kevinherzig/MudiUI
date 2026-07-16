@@ -683,19 +683,22 @@ class ScrollPage(Page):
     def unwire(self): [w.unwire() for w in self.widgets + self.rows]
     def animate(self): return any([w.animate() for w in self.widgets + self.rows])
 
-    def draw(self, d, th, img=None):
-        for w in self.widgets: w.draw(d, th)             # fixed chrome, straight to the frame
+    def draw(self, d, th, img):
+        sy = self.scroll_y                                # snapshot once: touch thread can mutate
+                                                            # scroll_y mid-frame otherwise, tearing rows
         vp = Image.new("RGB", (W, self.VIEW_H), th.BG)   # clips rows to the viewport, exactly
         vd = ImageDraw.Draw(vp)
         for r in self.rows:
-            r.oy = self.scroll_y                         # render thread only -> no race
+            r.oy = sy                                     # render thread only -> no race
             r.draw(vd, th)
         img.paste(vp, (0, self.VIEW_TOP))
-        if self.scrollable(): self._bar(d, th)
+        for w in self.widgets: w.draw(d, th)              # chrome drawn AFTER the paste, which would
+                                                            # otherwise clobber anything below VIEW_TOP
+        if self.scrollable(): self._bar(d, th, sy)
 
-    def _bar(self, d, th):
+    def _bar(self, d, th, sy):
         h = max(12, self.VIEW_H * self.VIEW_H / self.content_h)
-        y = self.VIEW_TOP + self.scroll_y / self.content_h * self.VIEW_H
+        y = self.VIEW_TOP + sy / self.content_h * self.VIEW_H
         d.rectangle((W-self.BAR_W, y, W-1, y+h), fill=th.CYAN)
 
     def on_touch(self, x, y):
