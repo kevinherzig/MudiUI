@@ -272,5 +272,133 @@ class TestApplySettingRouting(unittest.TestCase):
         self.assertEqual(a.rebuilds, 0)
 
 
+def fake_scroll_page(app, n_rows):
+    """A ScrollPage with a known row count, so scroll math doesn't depend on the settings list."""
+    class _Page(mudi.ScrollPage):
+        def build(self):
+            self.add(mudi.Banner(self.app, "Fake"))
+            y = 0
+            for i in range(n_rows):
+                self.add_row(mudi.ActionRow(self.app, "row %d" % i, lambda: None).place(y))
+                y += mudi.Row.H
+            self.content_h = y
+    return _Page(app)
+
+
+class TestScrollMath(unittest.TestCase):
+    def test_short_page_does_not_scroll(self):
+        p = fake_scroll_page(mudi.MockApp(), 3)
+        self.assertFalse(p.scrollable())
+        self.assertEqual(p.max_scroll(), 0)
+
+    def test_long_page_scrolls_by_the_overflow(self):
+        p = fake_scroll_page(mudi.MockApp(), 20)
+        self.assertEqual(p.content_h, 20 * mudi.Row.H)
+        self.assertTrue(p.scrollable())
+        self.assertEqual(p.max_scroll(), 20 * mudi.Row.H - p.VIEW_H)
+
+    def test_scroll_clamps_at_both_ends(self):
+        p = fake_scroll_page(mudi.MockApp(), 20)
+        p.scroll_to(-500)
+        self.assertEqual(p.scroll_y, 0)
+        p.scroll_to(99999)
+        self.assertEqual(p.scroll_y, p.max_scroll())
+
+    def test_scroll_wakes_the_render_loop_only_on_change(self):
+        a = mudi.MockApp()
+        p = fake_scroll_page(a, 20)
+        a.wake.clear()
+        p.scroll_to(0)                                   # already there
+        self.assertFalse(a.wake.is_set())
+        p.scroll_to(10)
+        self.assertTrue(a.wake.is_set())
+
+
+class TestScrollTouch(unittest.TestCase):
+    def test_touch_translates_screen_y_to_content_y(self):
+        p = fake_scroll_page(mudi.MockApp(), 20)
+        p.scroll_to(p.max_scroll())
+        hits = []
+        for r in p.rows:
+            r.act = lambda x, r=r: hits.append(r)
+        p.on_touch(20, p.VIEW_TOP + 5)
+        expected = [r for r in p.rows if r.in_row(p.max_scroll() + 5)]
+        self.assertEqual(hits, expected)
+        self.assertEqual(len(hits), 1)
+
+    def test_touch_above_the_viewport_hits_no_row(self):
+        p = fake_scroll_page(mudi.MockApp(), 20)
+        for r in p.rows:
+            r.act = lambda x: self.fail("a row acted on a touch in the chrome")
+        self.assertFalse(p.on_touch(20, 5))
+
+    def test_unscrolled_touch_hits_the_row_under_the_finger(self):
+        p = fake_scroll_page(mudi.MockApp(), 20)
+        hits = []
+        for r in p.rows:
+            r.act = lambda x, r=r: hits.append(r)
+        p.on_touch(20, p.VIEW_TOP + mudi.Row.H + 2)
+        self.assertEqual(hits, [p.rows[1]])
+
+
+class TestScrollDraw(unittest.TestCase):
+    def render(self, page):
+        from PIL import Image, ImageDraw
+        img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
+        page.draw(ImageDraw.Draw(img), mudi.Theme, img)
+        return img
+
+    def test_half_scrolled_rows_never_bleed_into_the_chrome(self):
+        p = fake_scroll_page(mudi.MockApp(), 20)
+        p.scroll_to(mudi.Row.H // 2)                     # half a row above the fold
+        img = self.render(p)
+        gap = img.crop((0, 26, mudi.W, p.VIEW_TOP))      # between banner rule and viewport
+        self.assertTrue(all_bg(gap))
+
+    def test_scrollbar_appears_only_when_scrollable(self):
+        short = self.render(fake_scroll_page(mudi.MockApp(), 3))
+        long_ = self.render(fake_scroll_page(mudi.MockApp(), 20))
+        strip = (mudi.W - 3, mudi.ScrollPage.VIEW_TOP, mudi.W, mudi.H)
+        self.assertTrue(all_bg(short.crop(strip)))
+        self.assertFalse(all_bg(long_.crop(strip)))
+
+    def test_scrolling_changes_what_is_drawn(self):
+        p = fake_scroll_page(mudi.MockApp(), 20)
+        top = self.render(p).tobytes()
+        p.scroll_to(p.max_scroll())
+        self.assertNotEqual(self.render(p).tobytes(), top)
+
+
+class TestSettingsPageScrolls(unittest.TestCase):
+    def page(self):
+        return mudi.SettingsPage(mudi.MockApp())
+
+    def test_settings_is_a_scrollpage(self):
+        self.assertIsInstance(self.page(), mudi.ScrollPage)
+
+    def test_rows_start_at_the_content_origin(self):
+        self.assertEqual(self.page().rows[0].y, 0)
+
+    def test_content_height_covers_every_row(self):
+        p = self.page()
+        self.assertEqual(p.content_h, len(p.rows) * mudi.Row.H)
+
+    def test_every_row_is_reachable_by_scrolling(self):
+        p = self.page()
+        p.scroll_to(p.max_scroll())
+        last = p.rows[-1]
+        self.assertLessEqual(last.y + mudi.Row.H - p.scroll_y, p.VIEW_H)
+
+    def test_settings_paints_at_every_scroll_extreme(self):
+        from PIL import Image, ImageDraw
+        p = self.page()
+        for pos in (0, p.max_scroll() // 2, p.max_scroll()):
+            p.scroll_to(pos)
+            img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
+            p.draw(ImageDraw.Draw(img), mudi.Theme, img)
+            self.assertFalse(all_bg(img),
+                             "settings drew nothing but background at scroll %d" % pos)
+
+
 if __name__ == "__main__":
     unittest.main()

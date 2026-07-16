@@ -484,18 +484,24 @@ class Button(Widget):
 # ───────────────────────── Settings rows (touch controls, uci-backed) ─────────────────────────
 class Row(Widget):
     """one settings line. Reads app.settings on draw; writes + applies on tap.
-       Rows implement on_touch(x,y)->bool (Page.on_touch calls it) instead of hit+action."""
+       Rows implement on_touch(x,y)->bool (Page.on_touch calls it) instead of hit+action.
+
+       self.y is a CONTENT coordinate. oy is the scroll offset the render thread subtracts to get
+       a viewport coordinate — ScrollPage.draw sets it, and nothing else ever reads it (the touch
+       thread does its own translation), so there's no race."""
     H = 28
+    oy = 0
     def __init__(self, app, label, skey=None):
         super().__init__(app); self.label = label; self.skey = skey; self.y = 0
     def place(self, y): self.y = y; return self
+    def ry(self): return self.y - self.oy               # content y -> viewport y
     def in_row(self, ry): return self.y <= ry < self.y + self.H
     def on_touch(self, x, y):
         if not self.in_row(y): return False
         self.act(x); return True
     def act(self, x): pass
     def draw_label(self, d, th):
-        d.text((14, self.y+8), self.label, font=th.mono[11], fill=th.INK)
+        d.text((14, self.ry()+8), self.label, font=th.mono[11], fill=th.INK)
     def _commit(self, nv):
         self.app.settings.set(self.skey, str(nv)); self.app.apply_setting(self.skey, str(nv)); self._inv()
 
@@ -513,7 +519,8 @@ class ToggleRow(Row):
             self._commit(nv)
     def draw(self, d, th):
         self.draw_label(d, th)
-        on = self.on(); w, h = 46, 18; x1 = W-14; x0 = x1-w; y0 = self.y+5
+        y = self.ry()
+        on = self.on(); w, h = 46, 18; x1 = W-14; x0 = x1-w; y0 = y+5
         d.rounded_rectangle((x0, y0, x1, y0+h), radius=9, fill=th.CYAN if on else th.BTN, outline=th.BTN_BD)
         kx = (x1-16) if on else (x0+2)
         d.ellipse((kx, y0+2, kx+14, y0+16), fill=th.BG if on else th.DIM)
@@ -542,12 +549,12 @@ class StepperRow(Row):
             self._commit(nv)
     def draw(self, d, th):
         self.draw_label(d, th)
-        y0 = self.y+5
+        y = self.ry(); y0 = y+5
         d.rounded_rectangle((116, y0, 136, y0+18), radius=4, fill=th.BTN, outline=th.BTN_BD)
         ctext(d, 126, y0+3, "-", th.bold[13], th.CYAN)
         d.rounded_rectangle((W-34, y0, W-14, y0+18), radius=4, fill=th.BTN, outline=th.BTN_BD)
         ctext(d, W-24, y0+3, "+", th.bold[13], th.CYAN)
-        ctext(d, (138 + W-38)/2, self.y+8, self.fmt(self.options[self.index()]), th.mono[12], th.INK)
+        ctext(d, (138 + W-38)/2, y+8, self.fmt(self.options[self.index()]), th.mono[12], th.INK)
 
 class SliderRow(Row):
     """tap-to-set slider over [lo, hi]. Applies live (brightness)."""
@@ -562,12 +569,13 @@ class SliderRow(Row):
         self._commit(int(round(self.lo + frac * (self.hi - self.lo))))
     def draw(self, d, th):
         self.draw_label(d, th)
-        v = self.cur(); yc = self.y+14
+        y = self.ry()
+        v = self.cur(); yc = y+14
         d.line((self.x0, yc, self.x1, yc), fill=th.GRID, width=2)
         kx = self.x0 + (v - self.lo) / (self.hi - self.lo) * (self.x1 - self.x0)
         d.line((self.x0, yc, kx, yc), fill=th.CYAN, width=2)
         d.ellipse((kx-4, yc-4, kx+4, yc+4), fill=th.INK)
-        d.text((W-36, self.y+8), str(v), font=th.mono[11], fill=th.SUB)
+        d.text((W-36, y+8), str(v), font=th.mono[11], fill=th.SUB)
 
 class ActionRow(Row):
     def __init__(self, app, label, action):
@@ -575,7 +583,7 @@ class ActionRow(Row):
     def act(self, x): self.action()
     def draw(self, d, th):
         self.draw_label(d, th)
-        d.text((W-22, self.y+6), "›", font=th.bold[15], fill=th.CYAN)
+        d.text((W-22, self.ry()+6), "›", font=th.bold[15], fill=th.CYAN)
 
 
 # ───────────────────────── Modal overlays ─────────────────────────
@@ -639,12 +647,65 @@ class Page:
     def wire(self):   [w.wire() for w in self.widgets]
     def unwire(self): [w.unwire() for w in self.widgets]
     def animate(self): return any([w.animate() for w in self.widgets])
-    def draw(self, d, th): [w.draw(d, th) for w in self.widgets]
+    def draw(self, d, th, img=None): [w.draw(d, th) for w in self.widgets]
     def on_touch(self, x, y):
         for w in self.widgets:
             if hasattr(w, "on_touch") and w.on_touch(x, y): return True     # settings rows
             if hasattr(w, "hit") and w.hit(x, y) and getattr(w, "action", None):
                 w.action(); return True                                     # buttons
+        return False
+
+class ScrollPage(Page):
+    """A page whose rows scroll under fixed chrome.
+
+       self.widgets = fixed chrome (the Banner). self.rows = scrolling content, laid out in
+       CONTENT coordinates from y=0. PIL has no clip region, so drawing rows straight to the frame
+       would let a half-scrolled row paint over the banner; instead rows render into a viewport
+       sub-image that clips them exactly, and it gets pasted below the chrome."""
+    VIEW_TOP = 30
+    VIEW_H = H - VIEW_TOP
+    BAR_W = 3
+
+    def __init__(self, app):
+        self.rows = []; self.scroll_y = 0; self.content_h = 0
+        super().__init__(app)                            # Page.__init__ calls build()
+
+    def add_row(self, r): self.rows.append(r); return r
+    def max_scroll(self): return max(0, self.content_h - self.VIEW_H)
+    def scrollable(self): return self.max_scroll() > 0
+
+    def scroll_to(self, v):
+        nv = max(0, min(self.max_scroll(), v))
+        if nv != self.scroll_y:
+            self.scroll_y = nv; self.app.wake.set()
+
+    def wire(self):   [w.wire() for w in self.widgets + self.rows]
+    def unwire(self): [w.unwire() for w in self.widgets + self.rows]
+    def animate(self): return any([w.animate() for w in self.widgets + self.rows])
+
+    def draw(self, d, th, img=None):
+        for w in self.widgets: w.draw(d, th)             # fixed chrome, straight to the frame
+        vp = Image.new("RGB", (W, self.VIEW_H), th.BG)   # clips rows to the viewport, exactly
+        vd = ImageDraw.Draw(vp)
+        for r in self.rows:
+            r.oy = self.scroll_y                         # render thread only -> no race
+            r.draw(vd, th)
+        img.paste(vp, (0, self.VIEW_TOP))
+        if self.scrollable(): self._bar(d, th)
+
+    def _bar(self, d, th):
+        h = max(12, self.VIEW_H * self.VIEW_H / self.content_h)
+        y = self.VIEW_TOP + self.scroll_y / self.content_h * self.VIEW_H
+        d.rectangle((W-self.BAR_W, y, W-1, y+h), fill=th.CYAN)
+
+    def on_touch(self, x, y):
+        for w in self.widgets:
+            if hasattr(w, "hit") and w.hit(x, y) and getattr(w, "action", None):
+                w.action(); return True
+        if y < self.VIEW_TOP: return False
+        cy = y - self.VIEW_TOP + self.scroll_y           # screen -> content
+        for r in self.rows:
+            if r.on_touch(x, cy): return True
         return False
 
 class MetricPage(Page):
@@ -707,7 +768,7 @@ class EthernetPage(MetricPage):
     PANEL  = ("LAN", "IP", "eth.ip",
               [("PORT", "eth.port"), ("CLIENTS", "eth.clients"), ("PROTO", "eth.proto")])
 
-class SettingsPage(Page):
+class SettingsPage(ScrollPage):
     title = "Settings"
     PAGE_NAMES = ("Signal", "WiFi", "System", "Eth")
     TIMEOUTS = {"0": "Off", "15": "15s", "30": "30s", "60": "1m", "300": "5m"}
@@ -734,9 +795,10 @@ class SettingsPage(Page):
             ToggleRow(a, "Start on boot", "start_on_boot"),
             ActionRow(a, "About", lambda: a.open_modal(About(a))),
         ]
-        y = 30
+        y = 0                                            # content coords; ScrollPage offsets them
         for r in rows:
-            self.add(r.place(y)); y += Row.H
+            self.add_row(r.place(y)); y += Row.H
+        self.content_h = y
 
 
 # ───────────────────────── App ─────────────────────────
@@ -965,7 +1027,7 @@ class App:
                     if first or self.wake.is_set() or anim or prev_anim:
                         self.wake.clear()
                         img = Image.new("RGB", (W, H), th.BG); d = ImageDraw.Draw(img)
-                        self.current.draw(d, th); self._dots(d, th)
+                        self.current.draw(d, th, img); self._dots(d, th)
                         if self.modal is not None: self.modal.draw(d, th)
                         fb.seek(0); fb.write(pack565(img)); first = False
                     prev_anim = anim
@@ -1026,7 +1088,7 @@ def _mock(which):
             if not isinstance(b, (int, float)): b = -100
             wdg.hist = [b + 7*math.sin(i*0.35) + 3*math.sin(i*0.85) for i in range(64)]
     img = Image.new("RGB", (W, H), Theme.BG); d = ImageDraw.Draw(img)
-    page.draw(d, Theme)
+    page.draw(d, Theme, img)
     out = "/tmp/mudi_%s.png" % which; img.save(out); print("wrote", out)
 
 def main():
