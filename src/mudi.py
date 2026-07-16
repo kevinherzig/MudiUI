@@ -1003,7 +1003,7 @@ class App:
     def _touch(self):
         try:
             from evdev import InputDevice, ecodes
-            dev = InputDevice("/dev/input/event0"); x = y = 0; down = False
+            dev = InputDevice("/dev/input/event0"); x = y = 0; down = False; p = None
             g = Gesture()
             for e in dev.read_loop():
                 if self.stop.is_set(): return
@@ -1012,13 +1012,14 @@ class App:
                     elif e.code in (ecodes.ABS_Y, ecodes.ABS_MT_POSITION_Y): y = e.value
                     if down:
                         sv = g.move(x, y)
-                        if sv is not None: self.current.scroll_to(sv)   # live follow
+                        if sv is not None: p.scroll_to(sv)              # live follow (page at touch-down)
                 elif e.type == ecodes.EV_KEY and e.code == ecodes.BTN_TOUCH:
                     if e.value == 1:
                         down = True; self.last_touch = time.time()
                         p = self.current
                         scrollable = (isinstance(p, ScrollPage) and p.scrollable()
-                                      and self.modal is None and not self.paused)
+                                      and self.modal is None and not self.paused
+                                      and not self.blanked)
                         g.down(x, y, scroll0=(p.scroll_y if scrollable else 0),
                                scrollable=scrollable)
                         if self.blanked: self._unblank(); self._wokeup = True   # wake on touch-down

@@ -476,24 +476,37 @@ class TestGesture(unittest.TestCase):
         self.assertEqual(g.up(180, 170), ("swipe", -1))  # dx=+80 (rightward) -> previous page
 
     def test_scroll_and_swipe_are_mutually_exclusive(self):
-        for dx, dy in ((60, 70), (80, 30), (0, 60), (60, 0)):
+        cases = ((60, 70, "scroll"), (80, 30, "swipe"), (0, 60, "scroll"), (60, 0, "swipe"))
+        for dx, dy, expected in cases:
             g = mudi.Gesture()
             g.down(100, 150, scroll0=0, scrollable=True)
             g.move(100 + dx, 150 + dy)
             kind, _ = g.up(100 + dx, 150 + dy)
-            self.assertIn(kind, ("scroll", "swipe", "tap"))
+            self.assertEqual(kind, expected, "dx=%d dy=%d" % (dx, dy))
             if kind == "scroll":
                 self.assertGreater(abs(dy), abs(dx))
             if kind == "swipe":
                 self.assertGreater(abs(dx), abs(dy))
+
+    def test_a_latched_scroll_suppresses_a_page_swipe(self):
+        """The latch's whole reason for existing: once a drag latches as a scroll, a later
+           decisively-horizontal move must NOT be reclassified as a swipe at up()."""
+        g = mudi.Gesture()
+        g.down(100, 200, scroll0=0, scrollable=True)
+        self.assertEqual(g.move(100, 180), 20)            # dy=-20 latches (|dy|>TOL, |dy|>|dx|)
+        # up() here is decisively horizontal on its own (dx=+80 > SWIPE=50, |dx|>|dy|) — only the
+        # latch stops this from being read as a swipe.
+        self.assertEqual(g.up(180, 190), ("scroll", None))
 
     def test_down_resets_state_between_gestures(self):
         g = mudi.Gesture()
         g.down(100, 200, scroll0=0, scrollable=True)
         g.move(100, 150)
         self.assertEqual(g.up(100, 150), ("scroll", None))
-        g.down(100, 100, scroll0=0, scrollable=True)     # fresh gesture
-        self.assertEqual(g.up(101, 101), ("tap", (101, 101)))
+        g.down(200, 100, scroll0=0, scrollable=True)      # fresh gesture, new origin
+        # dx = 140-200 = -60 (past SWIPE) only if x0 was actually reset to 200; a stale x0=100
+        # would give dx=+40 (below SWIPE) and misclassify this as a tap.
+        self.assertEqual(g.up(140, 105), ("swipe", 1))
 
 
 if __name__ == "__main__":
