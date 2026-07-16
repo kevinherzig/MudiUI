@@ -1412,8 +1412,9 @@ Confirm on the panel:
 4. Horizontal swipe still changes pages from Settings and from every metric page.
 5. Tapping a row still acts (toggle flips, slider sets, stepper steps) — a tap must not be eaten.
 
-Optionally run the suite on the box itself (stdlib-only, so it works there):
-`ssh root@<router-ip> 'cd /tmp && python3 -m unittest discover -s tests -v'` (after copying `tests/`).
+~~Optionally run the suite on the box itself~~ — **wrong: `python3-unittest` is not installed on the
+device** (verified 2026-07-16), so `python3 -m unittest` fails there. Use a plain-`assert` script for
+on-device checks instead.
 
 - [ ] **Step 10: Restore the stock UI**
 

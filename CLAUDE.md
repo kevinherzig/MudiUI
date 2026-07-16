@@ -181,6 +181,13 @@ the physical button. Two cooperating pieces:
   process count use `pidof python3` then check `/proc/<pid>/task`. Clean restart of a stray writer:
   `for p in $(pidof python3); do grep -q mudi.py /proc/$p/cmdline && kill -9 $p; done`.
 - To iterate on code under the service: `cat > /usr/bin/mudi.py` then `/etc/init.d/mudi restart`.
+- **`Settings → Start on boot` really does enable/disable the procd services** (`apply_setting`
+  runs `/etc/init.d/{mudi,mudi-watch} {enable,disable}`), removing the `/etc/rc.d/S9*` symlinks.
+  Its effect is **invisible until the next reboot** — the panel looks identical. If MudiUI
+  doesn't come back after a cold boot, check `uci get mudi.main.start_on_boot` and
+  `ls /etc/rc.d/ | grep mudi` FIRST; a missing `S99mudi` is the whole story (hit 2026-07-16).
+- **Screenshot the live panel** (no scp/base64 on the box): `ssh root@<ip> 'head -c 153600
+  /dev/fb0' > fb.raw`, then unpack `<u2` RGB565 with numpy. Best proof the panel truly renders.
 
 ### Install gotchas (baked into `src/install.sh`)
 - **`python3-pillow` clashes with `gl-sdk4-screen-large`** on `/usr/lib/libfreetype.so.6` (GL
@@ -188,6 +195,14 @@ the physical button. Two cooperating pieces:
   freetype (never `--force-overwrite` — risks the stock UI). libjpeg.so.62 is already present.
 - OpenWrt splits the stdlib: beyond `python3-light` you need `python3-numpy`, `python3-urllib`
   (numpy), `python3-logging` (PIL), `python3-ctypes`, `python3-cffi`, `python3-evdev`.
+- **Verified on-box 2026-07-16: python 3.11.7, numpy 1.24.3, Pillow 9.5.0.** Two traps follow:
+  - **`Image.getdata()` is deprecated (Pillow 12) but `Image.get_flattened_data` — the
+    replacement its warning names — does NOT exist on Pillow 9.5.0.** Taking the warning's
+    advice would `AttributeError` on the box. Read pixels with numpy (`np.asarray(img)`)
+    instead; numpy is already a hard dep. Same reasoning bans `ImageDraw._image` (private,
+    version-fragile) — pass the frame explicitly, which is why `Page.draw` takes `img`.
+  - **`python3-unittest` is NOT installed**, so `python3 -m unittest` fails on the box. The
+    test suite runs on the dev machine; for on-device checks write a plain-`assert` script.
 
 ### Future build tiers / toolchain (for when the PoC graduates)
 - **Tier 1 — raw framebuffer, zero toolchain:** static aarch64-musl C binary that `mmap`s
@@ -292,7 +307,12 @@ MudiUI/
 - ⏳ **Live-test the installer** on the Mudi (written but unrun); confirm idempotent re-run, then
   uninstall → gl_screen returns.
 - ⏳ **Cold-boot test** the boot-time service start (done at the device, not remotely).
-- ⏳ **On-device check** of graph styles + Settings scroll — rendered in `--mock` only so far;
+- ✅ **Deployed + live on the box 2026-07-16**: renders real data as a service; verified by
+  reading `/dev/fb0` back. All 4 pages x both styles, the ScrollPage paste, no chrome bleed
+  and the last Settings row all pass a plain-`assert` smoke script against Pillow 9.5.0.
+- ⏳ **Cold-boot test** still pending (services re-enabled 2026-07-16 after `start_on_boot`
+  had been switched off); and `Gesture.TOL` (8px) still needs a real finger — a tap that
+  drifts >8px vertically latches as a scroll and is swallowed.
   `Gesture.TOL` (8px) may need tuning with a real finger.
 - 🔭 Future: JSON scripting layer over the existing declarative widget bindings; optional
   `libmudi` C pack; ipk packaging.
