@@ -509,5 +509,22 @@ class TestGesture(unittest.TestCase):
         self.assertEqual(g.up(140, 105), ("swipe", 1))
 
 
+class TestMockPreview(unittest.TestCase):
+    def test_mock_writes_a_png_per_page_and_style(self):
+        for style in ("hero", "arc"):
+            for which in ("signal", "wifi", "system", "eth", "settings"):
+                mudi._mock(which, style)
+                path = "/tmp/mudi_%s_%s.png" % (which, style)
+                self.assertTrue(os.path.exists(path), path)
+
+    def test_history_seeding_finds_any_widget_with_a_hist(self):
+        a = mudi.MockApp()
+        a.settings.vals["graph_style"] = "arc"
+        page = mudi.SystemPage(a)
+        page.wire()
+        self.assertTrue([w for w in page.widgets if hasattr(w, "hist")],
+                        "seeding relies on duck-typing, not an isinstance list")
+
+
 if __name__ == "__main__":
     unittest.main()

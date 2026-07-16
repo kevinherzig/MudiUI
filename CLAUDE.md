@@ -139,7 +139,18 @@ Gauges ease at 30 fps only while animating.
     `/sys/class/thermal/thermal_zone15-18`, load/mem/uptime from `ubus system info`.
   - `EthernetPage`←`EthernetSource` — eth0 carrier/speed from `/sys/class/net`, LAN IP + live
     rx/tx throughput from `br-lan` `/statistics/*_bytes` deltas.
-  - **Roll-out pending:** WiFi/System/Ethernet still use `ArcGauge`; only Signal has `HeroGraph`.
+  - **Graph styles are selectable** (`Settings → Graph style`, uci `mudi.main.graph_style`, default
+    `hero`). `GAUGE_STYLES` maps a slug to a `Gauge` subclass; each style declares its slot
+    (`TOP`/`HEIGHT`/`STACK_Y`) and whether it already shows history (`SUPPLIES_HISTORY`).
+    `MetricPage` lays the stack out below `STACK_Y` and adds a `Trace` only when the style supplies
+    none — so **a new style costs one class + one registry entry, and zero page edits**. Changing the
+    setting rebuilds only the `MetricPage`s (`App._rebuild_metric_pages`); `SettingsPage` is spared
+    so the scroll position survives.
+  - **Settings scrolls** — `ScrollPage` splits fixed chrome (`widgets`) from scrolling content
+    (`rows`, laid out in content coords from y=0). PIL has no clip region, so rows render into a
+    viewport sub-image pasted below the chrome; `Row.oy` is the render-thread-only scroll offset.
+    Drag-to-scroll is classified by `Gesture` (pure, unit-tested): scroll needs `|dy|>|dx|`, swipe
+    needs `|dx|>|dy|`, so they can't both fire.
 - **Swipe navigation:** touch thread distinguishes tap (→button) from horizontal swipe
   (→prev/next page); page-indicator dots top-center.
 
@@ -263,6 +274,8 @@ MudiUI/
 │   ├── mudi_signal_live.py       ← earlier single-file monolith (reference)
 │   ├── bench.py                  ← render perf spike
 │   └── sample_modem.py           ← modem cadence spike
+├── tests/
+│   └── test_mudi.py              ← stdlib unittest suite (python3 -m unittest discover -s tests)
 └── reference/
     ├── gl_screen.aarch64.elf     ← stock UI binary (stripped) for strings/analysis
     ├── mcu.eco.lua               ← readable MCU daemon (Lua/eco)
@@ -274,8 +287,8 @@ MudiUI/
 ## 12. Current status / open threads
 - ✅ Panel ownership + unblank, 129 FPS pure-Python render, event-driven framework, 4 live pages,
   demand-driven polling, dual-SIM active-carrier resolution, procd services, hero redesign
-  (Signal), gesture toggle + resident pause/resume, installer, n71 band lock.
-- ⏳ **Roll `HeroGraph` out** to WiFi/System/Ethernet (only Signal has it).
+  (Signal), gesture toggle + resident pause/resume, installer, n71 band lock, selectable graph
+  styles + scrollable Settings.
 - ⏳ **Live-test the installer** on the Mudi (written but unrun); confirm idempotent re-run, then
   uninstall → gl_screen returns.
 - ⏳ **Cold-boot test** the boot-time service start (done at the device, not remotely).

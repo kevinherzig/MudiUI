@@ -1123,26 +1123,28 @@ class MockApp(App):
     def close_modal(self): self.modal = None
 
 
-def _mock(which):
+def _mock(which, style="hero"):
     a = MockApp()
+    a.settings.vals["graph_style"] = style
     page = {"wifi": WifiPage, "system": SystemPage, "eth": EthernetPage,
             "settings": SettingsPage}.get(which, SignalPage)(a)
     a.pages = [page]; page.wire()
     for _ in range(40): page.animate()
-    import math                                          # synthetic history so graphs render in preview
+    import math                                          # synthetic history so graphs render
     for wdg in page.widgets:
-        if isinstance(wdg, (HeroGraph, Trace)):
+        if hasattr(wdg, "hist"):                         # duck-typed: any new style seeds too
             b = getattr(wdg, "value", None)
             if not isinstance(b, (int, float)): b = -100
             wdg.hist = [b + 7*math.sin(i*0.35) + 3*math.sin(i*0.85) for i in range(64)]
     img = Image.new("RGB", (W, H), Theme.BG); d = ImageDraw.Draw(img)
-    page.draw(d, Theme, img)
-    out = "/tmp/mudi_%s.png" % which; img.save(out); print("wrote", out)
+    page.draw(d, Theme, img)                             # img: ScrollPage composites onto it
+    out = "/tmp/mudi_%s_%s.png" % (which, style); img.save(out); print("wrote", out)
 
 def main():
     if "--mock" in sys.argv:
         which = next((w for w in ("wifi", "system", "eth", "settings") if w in sys.argv), "signal")
-        _mock(which); return
+        style = next((s for s in GAUGE_STYLES if s in sys.argv), "hero")
+        _mock(which, style); return
     dur = next((float(a) for a in sys.argv[1:] if a.replace(".", "").isdigit()), None)
     app = App([CellularSource(), WifiSource(), SystemSource(), EthernetSource()])
     app.service = "--service" in sys.argv
