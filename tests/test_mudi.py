@@ -6,8 +6,18 @@ import os
 import sys
 import unittest
 
+import numpy as np
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 import mudi  # noqa: E402
+
+
+def all_bg(img):
+    """True if nothing was painted — every pixel is still the theme background.
+
+    Uses numpy (already a hard dependency of mudi) rather than Image.getdata(), which is
+    deprecated in Pillow 12 and removed in Pillow 14."""
+    return bool((np.asarray(img) == mudi.Theme.BG).all())
 
 
 class TestStyleRegistry(unittest.TestCase):
@@ -134,8 +144,8 @@ class TestMetricPageLayout(unittest.TestCase):
                 p.wire()
                 img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
                 p.draw(ImageDraw.Draw(img), mudi.Theme)
-                self.assertGreater(len(set(img.getdata())), 1,
-                                   "%s/%s drew nothing but background" % (name, style))
+                self.assertFalse(all_bg(img),
+                                 "%s/%s drew nothing but background" % (name, style))
 
 
 if __name__ == "__main__":
