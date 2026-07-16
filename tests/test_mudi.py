@@ -420,5 +420,81 @@ class TestSettingsPageScrolls(unittest.TestCase):
                          "last row's band at the bottom of the viewport is unpainted background")
 
 
+class TestGesture(unittest.TestCase):
+    def test_small_movement_is_a_tap(self):
+        g = mudi.Gesture()
+        g.down(100, 100, scroll0=0, scrollable=True)
+        self.assertIsNone(g.move(102, 104))              # inside TOL
+        self.assertEqual(g.up(102, 104), ("tap", (102, 104)))
+
+    def test_vertical_drag_scrolls_and_follows_the_finger(self):
+        g = mudi.Gesture()
+        g.down(100, 200, scroll0=40, scrollable=True)
+        self.assertEqual(g.move(100, 180), 60)           # dragged up 20 -> scroll += 20
+        self.assertEqual(g.move(100, 230), 10)           # dragged down 30 past origin
+        self.assertEqual(g.up(100, 230), ("scroll", None))
+
+    def test_scroll_latches_and_stays_latched(self):
+        g = mudi.Gesture()
+        g.down(100, 200, scroll0=0, scrollable=True)
+        self.assertEqual(g.move(100, 180), 20)           # latches
+        self.assertEqual(g.move(140, 190), 10)           # now-horizontal move keeps scrolling
+        self.assertEqual(g.up(140, 190), ("scroll", None))
+
+    def test_vertical_drag_on_an_unscrollable_page_is_still_a_tap(self):
+        g = mudi.Gesture()
+        g.down(100, 200, scroll0=0, scrollable=False)
+        self.assertIsNone(g.move(100, 150))
+        self.assertEqual(g.up(100, 150), ("tap", (100, 150)))
+
+    def test_horizontal_swipe_left_goes_to_the_next_page(self):
+        g = mudi.Gesture()
+        g.down(200, 100, scroll0=0, scrollable=True)
+        self.assertIsNone(g.move(140, 105))              # dy inside TOL -> no scroll
+        self.assertEqual(g.up(140, 105), ("swipe", 1))
+
+    def test_horizontal_swipe_right_goes_to_the_previous_page(self):
+        g = mudi.Gesture()
+        g.down(40, 100, scroll0=0, scrollable=True)
+        self.assertEqual(g.up(100, 105), ("swipe", -1))
+
+    def test_a_swipe_short_of_the_threshold_is_a_tap(self):
+        g = mudi.Gesture()
+        g.down(100, 100, scroll0=0, scrollable=False)
+        self.assertEqual(g.up(140, 100), ("tap", (140, 100)))   # dx=40 < SWIPE
+
+    def test_mostly_vertical_diagonal_scrolls_not_swipes(self):
+        g = mudi.Gesture()
+        g.down(100, 200, scroll0=0, scrollable=True)
+        self.assertEqual(g.move(160, 130), 70)           # dy=70 > dx=60 -> scroll
+        self.assertEqual(g.up(160, 130), ("scroll", None))
+
+    def test_mostly_horizontal_diagonal_swipes_not_scrolls(self):
+        g = mudi.Gesture()
+        g.down(100, 200, scroll0=0, scrollable=True)
+        self.assertIsNone(g.move(180, 170))              # dy=30 < dx=80 -> never latches
+        self.assertEqual(g.up(180, 170), ("swipe", -1))  # dx=+80 (rightward) -> previous page
+
+    def test_scroll_and_swipe_are_mutually_exclusive(self):
+        for dx, dy in ((60, 70), (80, 30), (0, 60), (60, 0)):
+            g = mudi.Gesture()
+            g.down(100, 150, scroll0=0, scrollable=True)
+            g.move(100 + dx, 150 + dy)
+            kind, _ = g.up(100 + dx, 150 + dy)
+            self.assertIn(kind, ("scroll", "swipe", "tap"))
+            if kind == "scroll":
+                self.assertGreater(abs(dy), abs(dx))
+            if kind == "swipe":
+                self.assertGreater(abs(dx), abs(dy))
+
+    def test_down_resets_state_between_gestures(self):
+        g = mudi.Gesture()
+        g.down(100, 200, scroll0=0, scrollable=True)
+        g.move(100, 150)
+        self.assertEqual(g.up(100, 150), ("scroll", None))
+        g.down(100, 100, scroll0=0, scrollable=True)     # fresh gesture
+        self.assertEqual(g.up(101, 101), ("tap", (101, 101)))
+
+
 if __name__ == "__main__":
     unittest.main()

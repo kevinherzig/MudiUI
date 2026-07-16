@@ -804,6 +804,42 @@ class SettingsPage(ScrollPage):
         self.content_h = y
 
 
+class Gesture:
+    """Pure gesture classifier for the touch loop — no I/O, so it's testable.
+
+       Scroll needs |dy| > |dx| and swipe needs |dx| > |dy|, so the two can never both fire.
+       Once a drag latches as a scroll it stays one for the rest of the gesture, which stops a
+       curving finger from firing a page change mid-scroll."""
+    TOL = 8                                              # px before a drag counts as a scroll
+    SWIPE = 50                                           # px before a drag counts as a page swipe
+
+    def __init__(self):
+        self.x0 = self.y0 = 0; self.scroll0 = 0
+        self.scrollable = False; self.scrolling = False
+
+    def down(self, x, y, scroll0=0, scrollable=False):
+        self.x0, self.y0 = x, y; self.scroll0 = scroll0
+        self.scrollable = scrollable; self.scrolling = False
+
+    def move(self, x, y):
+        """-> the new scroll_y while dragging a scrollable page, else None."""
+        if not self.scrollable: return None
+        dy = y - self.y0
+        if not self.scrolling and abs(dy) > self.TOL and abs(dy) > abs(x - self.x0):
+            self.scrolling = True
+        return (self.scroll0 - dy) if self.scrolling else None
+
+    def up(self, x, y):
+        """-> ('scroll', None) | ('swipe', +1 next / -1 prev) | ('tap', (x, y))."""
+        if self.scrolling:
+            self.scrolling = False
+            return ("scroll", None)
+        dx = x - self.x0; dy = y - self.y0
+        if abs(dx) > self.SWIPE and abs(dx) > abs(dy):
+            return ("swipe", 1 if dx < 0 else -1)
+        return ("tap", (x, y))
+
+
 # ───────────────────────── App ─────────────────────────
 class App:
     def __init__(self, sources):
@@ -967,27 +1003,35 @@ class App:
     def _touch(self):
         try:
             from evdev import InputDevice, ecodes
-            dev = InputDevice("/dev/input/event0"); x = y = x0 = y0 = 0; down = False
+            dev = InputDevice("/dev/input/event0"); x = y = 0; down = False
+            g = Gesture()
             for e in dev.read_loop():
                 if self.stop.is_set(): return
                 if e.type == ecodes.EV_ABS:
                     if e.code in (ecodes.ABS_X, ecodes.ABS_MT_POSITION_X): x = e.value
                     elif e.code in (ecodes.ABS_Y, ecodes.ABS_MT_POSITION_Y): y = e.value
+                    if down:
+                        sv = g.move(x, y)
+                        if sv is not None: self.current.scroll_to(sv)   # live follow
                 elif e.type == ecodes.EV_KEY and e.code == ecodes.BTN_TOUCH:
                     if e.value == 1:
-                        down = True; x0, y0 = x, y; self.last_touch = time.time()
-                        if self.blanked: self._unblank(); self._wokeup = True    # wake on touch-down
+                        down = True; self.last_touch = time.time()
+                        p = self.current
+                        scrollable = (isinstance(p, ScrollPage) and p.scrollable()
+                                      and self.modal is None and not self.paused)
+                        g.down(x, y, scroll0=(p.scroll_y if scrollable else 0),
+                               scrollable=scrollable)
+                        if self.blanked: self._unblank(); self._wokeup = True   # wake on touch-down
                     elif e.value == 0 and down:
                         down = False; self.last_touch = time.time()
-                        if self._wokeup: self._wokeup = False; continue          # waking touch: swallow
-                        if self.paused: continue                                 # gl_screen owns the UI now
+                        kind, arg = g.up(x, y)
+                        if self._wokeup: self._wokeup = False; continue        # waking touch: swallow
+                        if self.paused: continue                               # gl_screen owns the UI
                         if self.modal is not None:
-                            self.modal.on_touch(x, y); self.wake.set(); continue # tap routes to modal
-                        dx = x - x0
-                        if abs(dx) > 50 and abs(dx) > abs(y - y0):
-                            self.show(self.idx + (1 if dx < 0 else -1))          # swipe -> next/prev
-                        else:
-                            self.current.on_touch(x, y)                          # tap -> element
+                            self.modal.on_touch(x, y); self.wake.set(); continue
+                        if kind == "scroll": continue                          # drag, not a tap
+                        if kind == "swipe": self.show(self.idx + arg)
+                        else: self.current.on_touch(*arg)
         except Exception as e:
             print("touch disabled:", e)
 
