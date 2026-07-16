@@ -19,7 +19,7 @@ draws the "Settings" title bar.
   absent). All values stored as strings.
 - Defaults: `brightness=90 screen_timeout=30 stay_awake_charging=1 default_page=0 band_lock=0
   net_mode=auto longpress=1.6 start_on_boot=1`.
-- Shipped as `poc/mudi.config` → `/etc/config/mudi`; installer copies it **only if absent**
+- Shipped as `src/mudi.config` → `/etc/config/mudi`; installer copies it **only if absent**
   (never clobbers user settings). `/etc/config/*` is already in the default sysupgrade backup.
 
 ## Setting-row widget family (new)

@@ -17,14 +17,11 @@ box over this doc if they ever disagree** — then fix the doc.
 ---
 
 ## 1. Device access
-- **SSH:** `ssh root@192.168.8.1` (ed25519 key auth). Remote shell is BusyBox `ash`.
-  - ⚠️ This is the **home** Mudi. `192.168.8.1` = *a peer's* Mudi (`redacted`), a different box.
-  - ⚠️ `192.168.8.1` on the LAN is a **different GL router (`axt1800`, headless)** — not the Mudi.
+- **SSH:** `ssh root@<router-ip>` (GL default `192.168.8.1`; key auth). Remote shell is BusyBox `ash`.
 - **Hardware:** GL.iNet **GL-E5800** ("Mudi", 5G travel router), Qualcomm **SDXPINN**,
   `aarch64_cortex-a53` (quad Cortex-A55), GL firmware **4.8.5** / OpenWrt 23.05.4, kernel 5.15.170.
   Userspace is **musl** (`/lib/ld-musl-aarch64.so.1`). Modem: **Quectel RG650V**.
   Resources are ample: ~1 GB RAM free, ~2.3 GB free `/overlay`.
-- Tailnet node `redacted` `redacted` if you need it off-LAN.
 
 ## 2. The display hardware (what the app targets)
 
@@ -73,7 +70,7 @@ Sanity-draw (after stopping gl_screen + unblanking, §5): `head -c 153600 /dev/z
 - ⚠️ **Hijack an on-screen toggle** (watch uci with `inotifyd`) — works but only reacts to
   *existing* toggles; no new UI. Parked in favor of our own framebuffer app.
 
-## 5. The app: our own renderer on the framebuffer (`poc/mudi.py`)
+## 5. The app: our own renderer on the framebuffer (`src/mudi.py`)
 
 Since gl_screen can't be extended, MudiUI is a **standalone app that draws to `/dev/fb0`** and
 reads touch from `event0` — we co-opt the panel, not gl_screen's internals.
@@ -150,7 +147,7 @@ Gauges ease at 30 fps only while animating.
 The on-screen "STOCK UI" button was **removed** in favor of a touch gesture, because we can't use
 the physical button. Two cooperating pieces:
 
-- **`poc/mudi-watch.py`** (service `mudi-watch`, always on) — opens `event0` as a **second
+- **`src/mudi-watch.py`** (service `mudi-watch`, always on) — opens `event0` as a **second
   reader** (works whether MudiUI *or* gl_screen owns the panel). A **~1.6 s long-press held still**
   (`HOLD=1.6`, movement >`MOVE_TOL=40 px` reclassifies as a swipe and cancels; `DEBOUNCE=1.5 s`)
   fires `toggle()`: `kill -USR1` the running `mudi.py`, or `/etc/init.d/mudi start` as fallback.
@@ -174,7 +171,7 @@ the physical button. Two cooperating pieces:
   `for p in $(pidof python3); do grep -q mudi.py /proc/$p/cmdline && kill -9 $p; done`.
 - To iterate on code under the service: `cat > /usr/bin/mudi.py` then `/etc/init.d/mudi restart`.
 
-### Install gotchas (baked into `poc/install.sh`)
+### Install gotchas (baked into `src/install.sh`)
 - **`python3-pillow` clashes with `gl-sdk4-screen-large`** on `/usr/lib/libfreetype.so.6` (GL
   bundles 6.20.4). Install with **`opkg install --nodeps python3-pillow`** so it reuses GL's
   freetype (never `--force-overwrite` — risks the stock UI). libjpeg.so.62 is already present.
@@ -233,17 +230,17 @@ The `mcu` ubus object (readable Lua daemon `/usr/bin/mcu`, copy `reference/mcu.e
 ## 9. Deployment — procd services + installer
 Two procd services, both persisted in `/etc/sysupgrade.conf` (survive firmware upgrades; normal
 reboots persist via `/overlay`):
-- **`mudi`** (`/etc/init.d/mudi`, source `poc/mudi.init`): `START=99` (after gl_screen → grabs the
+- **`mudi`** (`/etc/init.d/mudi`, source `src/mudi.init`): `START=99` (after gl_screen → grabs the
   panel last), `respawn 3600 5 5`, runs `python3 /usr/bin/mudi.py --service`. In service mode a
   stock-UI request runs `/etc/init.d/mudi stop` (procd stops us → `finally` runs `gl_screen
   start`) — must **not** just exit, or `respawn` re-grabs the panel.
-- **`mudi-watch`** (`/etc/init.d/mudi-watch`, source `poc/mudi-watch.init`): `START=98`,
+- **`mudi-watch`** (`/etc/init.d/mudi-watch`, source `src/mudi-watch.init`): `START=98`,
   `respawn 3600 5 0` (always restart — it's the way back). Never owns the framebuffer.
-- **Installer** — `poc/install.sh` (run **on the box**: `cd poc && sh install.sh`): device guard
+- **Installer** — `src/install.sh` (run **on the box**: `cd src && sh install.sh`): device guard
   (root + `240,320` `/dev/fb0` + E5800 model, `MUDI_FORCE=1` overrides model only), installs only
   missing opkg deps (pillow via `--nodeps`), deploys the 4 files, enables both services,
   idempotently registers them in `sysupgrade.conf`, starts them. **Idempotent → re-running is the
-  update path.** `poc/uninstall.sh` reverses it and restores gl_screen. *(Written 2026-07-16; not
+  update path.** `src/uninstall.sh` reverses it and restores gl_screen. *(Written 2026-07-16; not
   yet live-tested against the Mudi.)*
 - **Manage:** `/etc/init.d/{mudi,mudi-watch} {start,stop,restart,enable,disable}`.
 
@@ -258,7 +255,7 @@ reboots persist via `/overlay`):
 ```
 MudiUI/
 ├── CLAUDE.md                     ← this file (project context + working agreements)
-├── poc/
+├── src/
 │   ├── mudi.py                   ← the app (Theme, DataSources, Widgets, Pages, App, toggle model)
 │   ├── mudi-watch.py             ← always-on long-press toggle watcher (second event0 reader)
 │   ├── mudi.init / mudi-watch.init  ← procd init scripts

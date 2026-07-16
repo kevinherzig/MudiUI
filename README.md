@@ -51,7 +51,7 @@ simplest path is **tar over SSH** (replace the address with your router's):
 
 ```sh
 git clone https://github.com/kevinherzig/MudiUI.git
-cd MudiUI/poc
+cd MudiUI/src
 tar cf - mudi.py mudi-watch.py mudi.init mudi-watch.init mudi.config install.sh uninstall.sh \
 | ssh root@192.168.8.1 'mkdir -p /tmp/mudiui && tar xf - -C /tmp/mudiui && sh /tmp/mudiui/install.sh'
 ```
@@ -97,7 +97,7 @@ Settings live in `uci` at `/etc/config/mudi` (survives firmware upgrades automat
 ## Repository layout
 
 ```
-poc/
+src/
   mudi.py            the app — Theme, DataSources, Widgets, Pages, Settings, App
   mudi-watch.py      always-on long-press watcher (independent touch reader)
   mudi.init          procd service for the UI
