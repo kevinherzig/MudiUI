@@ -1139,6 +1139,8 @@ def _mock(which, style="hero", outdir="/tmp"):
             if not isinstance(b, (int, float)): b = -100
             amp = max(abs(b) * 0.07, 0.05)               # scale noise to the series' own magnitude
             wdg.hist = [b + amp*math.sin(i*0.35) + amp*0.4*math.sin(i*0.85) for i in range(64)]
+            if isinstance(b, int):                       # preserve numeric type of the source
+                wdg.hist = [int(round(x)) for x in wdg.hist]
     img = Image.new("RGB", (W, H), Theme.BG); d = ImageDraw.Draw(img)
     page.draw(d, Theme, img)                             # img: ScrollPage composites onto it
     out = "%s/mudi_%s_%s.png" % (outdir, which, style); img.save(out); print("wrote", out)
