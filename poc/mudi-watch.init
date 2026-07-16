@@ -1,0 +1,16 @@
+#!/bin/sh /etc/rc.common
+# MudiUI toggle watcher — always-on. Listens for a long-press to switch between
+# MudiUI and gl_screen. Never owns the framebuffer, so it coexists with both.
+
+USE_PROCD=1
+START=98        # before the UI service; it just needs to be listening
+STOP=11
+
+start_service() {
+    procd_open_instance
+    procd_set_param command python3 /usr/bin/mudi-watch.py
+    procd_set_param respawn 3600 5 0     # always restart; it must always be listening
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+}

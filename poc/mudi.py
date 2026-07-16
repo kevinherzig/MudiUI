@@ -25,6 +25,7 @@ W, H = 240, 320
 BUS = "cpu"
 STOCK_BTN = (12, H-34, W-12, H-10)
 _MISS = object()
+_FLASH = b'\xff\x07' * (W * H)                            # full-screen cyan (RGB565 0x07FF) toggle flash
 
 
 # ───────────────────────── Theme ─────────────────────────
@@ -295,6 +296,44 @@ class ArcGauge(Widget):
         ctext(d, cx, cy-22, str(self.value) if self.value is not None else "--", th.mono[32], th.INK)
         ctext(d, cx, cy+15, self.unit, th.mono[11], th.DIM)
 
+class HeroGraph(Widget):
+    """Hero: big current value + hi/lo range (left) and a large auto-scaled area chart (right).
+       Replaces the arc gauge — shows trend not just level, and gives the graph the real estate."""
+    def __init__(self, app, value, series, unit, x=12, y=32, w=W-24, h=118):
+        super().__init__(app)
+        self.k_value, self.k_series, self.unit = value, series, unit
+        self.x, self.y, self.w, self.h = x, y, w, h
+        self.value=None; self.hist=[]
+    def wire(self):
+        self._sub(self.k_value, lambda v: setattr(self, "value", v))
+        self._sub(self.k_series, self._push)
+    def _push(self, v):
+        if isinstance(v, (int, float)): self.hist = (self.hist + [v])[-96:]
+    def draw(self, d, th):
+        x, y, w, h = self.x, self.y, self.w, self.h
+        # left column: big value, unit, hi/lo of the visible window
+        d.text((x, y+12), str(self.value) if self.value is not None else "--", font=th.mono[32], fill=th.INK)
+        d.text((x+2, y+50), self.unit, font=th.mono[11], fill=th.DIM)
+        gx, gy = x+98, y; gw, gh = x+w-gx, h
+        if len(self.hist) >= 2:
+            lo, hi = min(self.hist), max(self.hist)
+            d.text((x, y+80),  "hi", font=th.mono[9], fill=th.DIM)
+            d.text((x+22, y+80), "%d" % round(hi), font=th.mono[11], fill=th.SUB)
+            d.text((x, y+96),  "lo", font=th.mono[9], fill=th.DIM)
+            d.text((x+22, y+96), "%d" % round(lo), font=th.mono[11], fill=th.SUB)
+            # large chart
+            d.rectangle((gx, gy, gx+gw, gy+gh), outline=th.GRID)
+            for frac in (0.25, 0.5, 0.75):                 # faint gridlines
+                yy = gy + gh*frac; d.line((gx+1, yy, gx+gw-1, yy), fill=(18, 22, 30))
+            span = (hi - lo) or 1
+            f = lambda v: (v - lo) / span * 0.84 + 0.08
+            pts = [(gx+2 + i*(gw-4)/(len(self.hist)-1), gy+gh-2 - f(v)*(gh-4)) for i, v in enumerate(self.hist)]
+            d.polygon(pts + [(pts[-1][0], gy+gh-1), (pts[0][0], gy+gh-1)], fill=(6, 40, 46))
+            d.line(pts, fill=th.CYAN, width=2)
+            ex, ey = pts[-1]; d.ellipse((ex-3, ey-3, ex+3, ey+3), fill=th.INK)
+        else:
+            d.rectangle((gx, gy, gx+gw, gy+gh), outline=th.GRID)
+
 class StatsRow(Widget):
     """two labelled values side by side: pairs = [(label, key), ...]."""
     def __init__(self, app, y, pairs):
@@ -380,12 +419,10 @@ class SignalPage(Page):
         a = self.app
         self.add(Header(a, title="sim.carrier", badge="sim.slot", right="net.mode",
                         flash="signal.rsrp", prefix="SIM"))
-        self.add(ArcGauge(a, value="signal.rsrp", level="signal.level", unit="dBm  RSRP"))
-        self.add(StatsRow(a, 150, [("RSRQ", "signal.rsrq"), ("SINR", "signal.sinr")]))
-        self.add(InfoPanel(a, 12, 184, "SERVING CELL", "CELL", "cell.id",
+        self.add(HeroGraph(a, value="signal.rsrp", series="signal.rsrp", unit="dBm  RSRP"))
+        self.add(StatsRow(a, 172, [("RSRQ", "signal.rsrq"), ("SINR", "signal.sinr")]))
+        self.add(InfoPanel(a, 12, 208, "SERVING CELL", "CELL", "cell.id",
                            [("BAND", "cell.band"), ("FREQ", "cell.freq"), ("BW", "cell.bw")]))
-        self.add(Trace(a, "signal.rsrp"))
-        self.add(Button(a, STOCK_BTN, "▶  STOCK UI", a.request_stock))
 
 class WifiPage(Page):
     title = "WiFi"
@@ -397,8 +434,7 @@ class WifiPage(Page):
         self.add(StatsRow(a, 150, [("RATE", "wifi.rate"), ("CHAN", "wifi.chan")]))
         self.add(InfoPanel(a, 12, 184, "ACCESS POINT", "SSID", "wifi.ap",
                            [("CLIENTS", "wifi.clients"), ("CH", "wifi.chan"), ("WIDTH", "wifi.width")]))
-        self.add(Trace(a, "wifi.signal"))
-        self.add(Button(a, STOCK_BTN, "▶  STOCK UI", a.request_stock))
+        self.add(Trace(a, "wifi.signal", y=270, h=36))
 
 class SystemPage(Page):
     title = "System"
@@ -410,8 +446,7 @@ class SystemPage(Page):
         self.add(StatsRow(a, 150, [("CPU", "sys.cputemp"), ("LOAD", "sys.load")]))
         self.add(InfoPanel(a, 12, 184, "RESOURCES", "RAM", "sys.ram",
                            [("FREE", "sys.free"), ("BATT", "batt.temp"), ("UP", "sys.uptime")]))
-        self.add(Trace(a, "sys.load"))
-        self.add(Button(a, STOCK_BTN, "▶  STOCK UI", a.request_stock))
+        self.add(Trace(a, "sys.load", y=270, h=36))
 
 class EthernetPage(Page):
     title = "Ethernet"
@@ -422,8 +457,7 @@ class EthernetPage(Page):
         self.add(StatsRow(a, 150, [("RX", "eth.rx"), ("TX", "eth.tx")]))
         self.add(InfoPanel(a, 12, 184, "LAN", "IP", "eth.ip",
                            [("PORT", "eth.port"), ("CLIENTS", "eth.clients"), ("PROTO", "eth.proto")]))
-        self.add(Trace(a, "eth.rxn"))
-        self.add(Button(a, STOCK_BTN, "▶  STOCK UI", a.request_stock))
+        self.add(Trace(a, "eth.rxn", y=270, h=36))
 
 
 # ───────────────────────── App ─────────────────────────
@@ -434,8 +468,42 @@ class App:
         self.registry = {k: s for s in sources for k in s.provides}
         self.pages = []; self.idx = 0; self.current = None; self.theme = Theme
         self.service = False                              # True when launched by the procd service
+        self.paused = False                              # True while gl_screen owns the panel
+        self._toggle_req = threading.Event()
 
     def invalidate(self): self.wake.set()
+
+    def _take_panel(self):                               # take the framebuffer with NO overlap
+        # gl_screen takes ~4s to exit on `stop`, and it keeps drawing the whole time -> both UIs
+        # fight. So freeze its drawing INSTANTLY (safe here: we're killing it, not resuming), then
+        # terminate it in the background while we draw.
+        subprocess.run("kill -STOP $(pidof gl_screen) 2>/dev/null", shell=True)
+        subprocess.run("echo 0 > /sys/class/graphics/fb0/blank", shell=True, capture_output=True)
+        subprocess.Popen("/etc/init.d/gl_screen stop", shell=True)
+
+    def _notice(self, text):                             # full-screen message drawn while we still own fb
+        img = Image.new("RGB", (W, H), Theme.BG); d = ImageDraw.Draw(img)
+        ctext(d, W/2, H/2-18, text, Theme.bold[15], Theme.CYAN)
+        ctext(d, W/2, H/2+6, "one moment", Theme.mono[11], Theme.DIM)
+        try:
+            with open("/dev/fb0", "r+b", buffering=0) as f: f.seek(0); f.write(pack565(img))
+        except Exception: pass
+
+    def _release_panel(self):                            # show notice, then cold-start gl_screen over it
+        self._notice("Stock UI")
+        subprocess.Popen("/etc/init.d/gl_screen start", shell=True)
+
+    def _flash(self, ms=110):                            # brief full-screen flash = "touch accepted"
+        try:
+            with open("/dev/fb0", "r+b", buffering=0) as f: f.seek(0); f.write(_FLASH)
+        except Exception: pass
+        time.sleep(ms / 1000.0)
+
+    def _do_toggle(self):
+        self._flash()
+        self.paused = not self.paused
+        if self.paused: self._release_panel()            # -> gl_screen (notice + cold start; it works)
+        else: self._take_panel(); self.wake.set()        # -> MudiUI (instant, resident)
     def subscribe(self, key, cb):
         s = self.registry.get(key)
         if s: s.subscribe(key, cb)                       # unknown key -> no-op (shows placeholder)
@@ -469,10 +537,11 @@ class App:
                     if e.value == 1: down = True; x0, y0 = x, y
                     elif e.value == 0 and down:
                         down = False; dx = x - x0
+                        if self.paused: continue                           # gl_screen owns the UI now
                         if abs(dx) > 50 and abs(dx) > abs(y - y0):
                             self.show(self.idx + (1 if dx < 0 else -1))   # swipe -> next/prev
                         else:
-                            self.current.on_touch(x, y)                    # tap -> button
+                            self.current.on_touch(x, y)                    # tap -> element
         except Exception as e:
             print("touch disabled:", e)
 
@@ -486,16 +555,22 @@ class App:
 
     def run(self, pages, start=0, duration=None):
         self.pages = pages
-        subprocess.run("/etc/init.d/gl_screen stop", shell=True, capture_output=True); time.sleep(1)
-        subprocess.run("echo 0 > /sys/class/graphics/fb0/blank", shell=True, capture_output=True)
+        self._take_panel()                                # freeze gl_screen, snapshot its frame, take panel
         for s in (signal.SIGINT, signal.SIGTERM):
             signal.signal(s, lambda *_: self.stop.set())
+        signal.signal(signal.SIGUSR1, lambda *_: self._toggle_req.set())   # long-press toggle
         threading.Thread(target=self._touch, daemon=True).start()
         self.show(start)
         th = self.theme; prev_anim = False; first = True; t0 = time.time()
         try:
             with open("/dev/fb0", "r+b", buffering=0) as fb:
                 while not self.stop.is_set():
+                    if self._toggle_req.is_set():
+                        self._toggle_req.clear(); self._do_toggle(); first = True
+                    if self.paused:                        # gl_screen owns the panel; sit idle
+                        self.wake.wait(0.2)
+                        if duration and time.time()-t0 > duration: break
+                        continue
                     anim = self.current.animate()
                     if first or self.wake.is_set() or anim or prev_anim:
                         self.wake.clear()
@@ -535,6 +610,12 @@ def _mock(which):
     page = {"wifi": WifiPage, "system": SystemPage, "eth": EthernetPage}.get(which, SignalPage)(a)
     a.pages = [page]; page.wire()
     for _ in range(40): page.animate()
+    import math                                          # synthetic history so graphs render in preview
+    for wdg in page.widgets:
+        if isinstance(wdg, (HeroGraph, Trace)):
+            b = getattr(wdg, "value", None)
+            if not isinstance(b, (int, float)): b = -100
+            wdg.hist = [b + 7*math.sin(i*0.35) + 3*math.sin(i*0.85) for i in range(64)]
     img = Image.new("RGB", (W, H), Theme.BG); d = ImageDraw.Draw(img)
     page.draw(d, Theme)
     out = "/tmp/mudi_%s.png" % which; img.save(out); print("wrote", out)
