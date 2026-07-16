@@ -61,8 +61,18 @@ import os
 import sys
 import unittest
 
+import numpy as np
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 import mudi  # noqa: E402
+
+
+def all_bg(img):
+    """True if nothing was painted — every pixel is still the theme background.
+
+       Uses numpy (already a hard dependency of mudi) rather than Image.getdata(), which is
+       deprecated in Pillow 12 and removed in Pillow 14."""
+    return bool((np.asarray(img) == mudi.Theme.BG).all())
 
 
 class TestStyleRegistry(unittest.TestCase):
@@ -376,8 +386,8 @@ class TestMetricPageLayout(unittest.TestCase):
                 p.wire()
                 img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
                 p.draw(ImageDraw.Draw(img), mudi.Theme)
-                self.assertGreater(len(set(img.getdata())), 1,
-                                   "%s/%s drew nothing but background" % (name, style))
+                self.assertFalse(all_bg(img),
+                                 "%s/%s drew nothing but background" % (name, style))
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -510,11 +520,11 @@ class TestHeroSeriesLabel(unittest.TestCase):
 
     def test_label_band_is_empty_without_a_label(self):
         band = self.render(None).crop(self.LABEL_BAND)
-        self.assertEqual(set(band.getdata()), {mudi.Theme.BG})
+        self.assertTrue(all_bg(band))
 
     def test_label_band_is_painted_with_a_label(self):
         band = self.render("LOAD").crop(self.LABEL_BAND)
-        self.assertNotEqual(set(band.getdata()), {mudi.Theme.BG})
+        self.assertFalse(all_bg(band))
 
     def test_label_needs_history_to_mean_anything(self):
         from PIL import Image, ImageDraw
@@ -522,7 +532,7 @@ class TestHeroSeriesLabel(unittest.TestCase):
                            unit="%  BATTERY", series_label="LOAD")
         img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
         g.draw(ImageDraw.Draw(img), mudi.Theme)          # hist empty -> must not raise
-        self.assertEqual(set(img.crop(self.LABEL_BAND).getdata()), {mudi.Theme.BG})
+        self.assertTrue(all_bg(img.crop(self.LABEL_BAND)))
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -833,14 +843,14 @@ class TestScrollDraw(unittest.TestCase):
         p.scroll_to(mudi.Row.H // 2)                     # half a row above the fold
         img = self.render(p)
         gap = img.crop((0, 26, mudi.W, p.VIEW_TOP))      # between banner rule and viewport
-        self.assertEqual(set(gap.getdata()), {mudi.Theme.BG})
+        self.assertTrue(all_bg(gap))
 
     def test_scrollbar_appears_only_when_scrollable(self):
         short = self.render(fake_scroll_page(mudi.MockApp(), 3))
         long_ = self.render(fake_scroll_page(mudi.MockApp(), 20))
         strip = (mudi.W - 3, mudi.ScrollPage.VIEW_TOP, mudi.W, mudi.H)
-        self.assertEqual(set(short.crop(strip).getdata()), {mudi.Theme.BG})
-        self.assertNotEqual(set(long_.crop(strip).getdata()), {mudi.Theme.BG})
+        self.assertTrue(all_bg(short.crop(strip)))
+        self.assertFalse(all_bg(long_.crop(strip)))
 
     def test_scrolling_changes_what_is_drawn(self):
         p = fake_scroll_page(mudi.MockApp(), 20)
@@ -876,8 +886,8 @@ class TestSettingsPageScrolls(unittest.TestCase):
             p.scroll_to(pos)
             img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
             p.draw(ImageDraw.Draw(img), mudi.Theme, img)
-            self.assertGreater(len(set(img.getdata())), 1,
-                               "settings drew nothing but background at scroll %d" % pos)
+            self.assertFalse(all_bg(img),
+                             "settings drew nothing but background at scroll %d" % pos)
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1145,7 +1155,7 @@ class TestGesture(unittest.TestCase):
         g = mudi.Gesture()
         g.down(100, 200, scroll0=0, scrollable=True)
         self.assertIsNone(g.move(180, 170))              # dy=30 < dx=80 -> never latches
-        self.assertEqual(g.up(180, 170), ("swipe", 1))
+        self.assertEqual(g.up(180, 170), ("swipe", -1))  # dx=+80 is rightward -> prev page
 
     def test_scroll_and_swipe_are_mutually_exclusive(self):
         for dx, dy in ((60, 70), (80, 30), (0, 60), (60, 0)):
@@ -1426,7 +1436,7 @@ git commit -m "feat: --mock takes a style; document graph styles + settings scro
 
 **Spec coverage:** §1 `Gauge` contract + registry → Task 1. §2 `MetricPage` + geometry table + page bindings → Task 2; the System/Ethernet `series_label` resolution → Tasks 2 (binding) + 3 (rendering). §3 setting + `_rebuild_metric_pages` → Task 4. §4 `ScrollPage` + `Row.oy` + touch axis → Tasks 5-6. §5 verification (`--mock` style arg, `hasattr(hist)`, 8 PNGs, on-device) → Task 7. Out-of-scope items are absent by construction.
 
-**Known transient:** after Task 4, Settings has 11 rows (338px) on a 320px panel and the last row is off-screen until Task 5 lands scrolling. Tasks 4 and 5 must ship together to reach a releasable state.
+**Known transient:** after Task 4, Settings has 11 rows (338px) on a 320px panel and the last row is off-screen. Task 5 adds the scroll *mechanism*, but nothing calls `scroll_to` until Task 6 wires the touch loop's vertical axis — so `scroll_y` stays pinned at 0 and the last row remains unreachable on-device through Task 5. **Tasks 4, 5 and 6 must ship together to reach a releasable state.**
 
 **Deviations from spec, both deliberate:**
 
