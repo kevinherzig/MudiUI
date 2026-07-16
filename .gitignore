@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.png
 *.raw
+
+# ...but keep the README screenshots
+!docs/images/*.png
