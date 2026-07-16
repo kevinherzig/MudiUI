@@ -397,6 +397,8 @@ class HeroGraph(Gauge):
         gx, gy = x+98, y; gw, gh = x+w-gx, h
         if len(self.hist) >= 2:
             lo, hi = min(self.hist), max(self.hist)
+            if self.series_label:                        # the curve isn't the headline -> name it
+                d.text((x, y+66), self.series_label, font=th.mono[9], fill=th.DIM)
             d.text((x, y+80),  "hi", font=th.mono[9], fill=th.DIM)
             d.text((x+22, y+80), "%d" % round(hi), font=th.mono[11], fill=th.SUB)
             d.text((x, y+96),  "lo", font=th.mono[9], fill=th.DIM)

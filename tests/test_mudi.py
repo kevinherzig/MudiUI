@@ -148,5 +148,37 @@ class TestMetricPageLayout(unittest.TestCase):
                                  "%s/%s drew nothing but background" % (name, style))
 
 
+class TestHeroSeriesLabel(unittest.TestCase):
+    LABEL_BAND = (12, mudi.HeroGraph.TOP + 66, 90, mudi.HeroGraph.TOP + 78)
+
+    def render(self, series_label):
+        from PIL import Image, ImageDraw
+        g = mudi.HeroGraph(mudi.MockApp(), value="batt.pct", series="sys.load",
+                           unit="%  BATTERY", series_label=series_label)
+        g.hist = [1.0, 2.0, 1.5, 3.0, 2.5]
+        img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
+        g.draw(ImageDraw.Draw(img), mudi.Theme)
+        return img
+
+    def test_label_changes_the_frame(self):
+        self.assertNotEqual(self.render("LOAD").tobytes(), self.render(None).tobytes())
+
+    def test_label_band_is_empty_without_a_label(self):
+        band = self.render(None).crop(self.LABEL_BAND)
+        self.assertTrue(all_bg(band))
+
+    def test_label_band_is_painted_with_a_label(self):
+        band = self.render("LOAD").crop(self.LABEL_BAND)
+        self.assertFalse(all_bg(band))
+
+    def test_label_needs_history_to_mean_anything(self):
+        from PIL import Image, ImageDraw
+        g = mudi.HeroGraph(mudi.MockApp(), value="batt.pct", series="sys.load",
+                           unit="%  BATTERY", series_label="LOAD")
+        img = Image.new("RGB", (mudi.W, mudi.H), mudi.Theme.BG)
+        g.draw(ImageDraw.Draw(img), mudi.Theme)          # hist empty -> must not raise
+        self.assertTrue(all_bg(img.crop(self.LABEL_BAND)))
+
+
 if __name__ == "__main__":
     unittest.main()
