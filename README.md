@@ -90,8 +90,24 @@ tar cf - mudi.py mudi-watch.py mudi.init mudi-watch.init mudi.config install.sh 
 ```
 </details>
 
-To remove, run `uninstall.sh` from the downloaded source (e.g.
-`/tmp/mudiui-src/MudiUI-*/src/uninstall.sh` after the one-liner) — it restores the stock UI.
+## Uninstall
+
+**One line, on the router.** SSH into the Mudi and run:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/kevinherzig/MudiUI/main/src/uninstall.sh | sh
+```
+
+That stops and disables both services, removes the installed files, strips them from
+`/etc/sysupgrade.conf`, and hands the panel back to the stock UI. Like the installer, it's
+idempotent and safe to re-run.
+
+Two things it does **not** do: it leaves the opkg dependencies (`numpy`, `pillow`, `evdev`)
+installed, since other things may use them; and it **does** delete your settings at
+`/etc/config/mudi` — copy that file first if you want to keep them.
+
+If you installed from a local clone, `sh src/uninstall.sh` on the router does the same thing
+without the network fetch.
 
 ## Usage
 
