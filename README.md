@@ -20,6 +20,24 @@ eventual replacement for) the stock on-screen UI. It's pure Python, event-driven
 
 ## Why
 
+The Mudi is an awesome device and one of it's coolest features is it's large graphical touch screen.
+One of the use cases I felt was missing was the ability to use the screen to help me position the
+modem correctly by showing me a live view of signal strength / tower / band / bandwith.  So I used
+Claude Code to create this series of screens.
+
+## How it works
+
+MudiUI inserts itself first in the boot sequence before GL's gl_screen.  It displays the graphs
+and has a settings screen.  
+
+To go back and forth between MudiUI and GL_Screen, long press anywhere on thhe screen for 1.5 seconds.
+You'll see a flash and the UI will change.
+
+Unforutantly I couldn't keep GL's screens hot loaded in the background so there will be a few second
+pause when GL's screens are loading.  MudiUI does stay hotloaded so flipping back to it will be quick.
+
+##  Architecture
+
 The Mudi's stock screen (`gl_screen`) is a closed LVGL binary — you can relabel or hide existing
 items via config, but you **cannot add pages or custom logic** to it. So instead of extending it,
 MudiUI draws directly to `/dev/fb0` and reads the capacitive touch panel itself, co-opting the
