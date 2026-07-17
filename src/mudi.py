@@ -379,6 +379,7 @@ class HeroGraph(Gauge):
     TOP = 32; HEIGHT = 118; STACK_Y = 172
     SUPPLIES_HISTORY = True
     LABEL = "Hero"
+    POINTS = 12                                          # x-axis capacity; also what _mock seeds
 
     def __init__(self, app, value, level=None, series=None, unit="", series_label=None,
                  x=12, y=TOP, w=W-24, h=HEIGHT):
@@ -389,7 +390,7 @@ class HeroGraph(Gauge):
         self._sub(self.k_value, lambda v: setattr(self, "value", v))
         self._sub(self.k_series, self._push)
     def _push(self, v):
-        if isinstance(v, (int, float)): self.hist = (self.hist + [v])[-96:]
+        if isinstance(v, (int, float)): self.hist = (self.hist + [v])[-self.POINTS:]
     def draw(self, d, th):
         x, y, w, h = self.x, self.y, self.w, self.h
         d.text((x, y+12), str(self.value) if self.value is not None else "--", font=th.mono[32], fill=th.INK)
@@ -1147,7 +1148,8 @@ def _mock(which, style="hero", outdir="/tmp"):
             b = MOCK_DATA.get(key) if key else None
             if not isinstance(b, (int, float)): b = -100
             amp = max(abs(b) * 0.07, 0.05)               # scale noise to the series' own magnitude
-            wdg.hist = [b + amp*math.sin(i*0.35) + amp*0.4*math.sin(i*0.85) for i in range(64)]
+            n = getattr(wdg, "POINTS", 64)               # seed to the widget's own cap, not past it
+            wdg.hist = [b + amp*math.sin(i*0.35) + amp*0.4*math.sin(i*0.85) for i in range(n)]
             if isinstance(b, int):                       # preserve numeric type of the source
                 wdg.hist = [int(round(x)) for x in wdg.hist]
     img = Image.new("RGB", (W, H), Theme.BG); d = ImageDraw.Draw(img)

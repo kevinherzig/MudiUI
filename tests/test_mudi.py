@@ -152,6 +152,18 @@ class TestMetricPageLayout(unittest.TestCase):
                                  "%s/%s drew nothing but background" % (name, style))
 
 
+class TestHeroHistoryCap(unittest.TestCase):
+    def test_push_keeps_only_the_most_recent_POINTS(self):
+        g = mudi.HeroGraph(mudi.MockApp(), value="signal.rsrp", series="signal.rsrp")
+        for v in range(mudi.HeroGraph.POINTS * 3): g._push(v)
+        self.assertEqual(len(g.hist), mudi.HeroGraph.POINTS)
+        self.assertEqual(g.hist[-1], mudi.HeroGraph.POINTS * 3 - 1)   # newest kept, oldest dropped
+
+    def test_push_ignores_non_numeric(self):
+        g = mudi.HeroGraph(mudi.MockApp(), value="signal.rsrp", series="signal.rsrp")
+        g._push("--"); self.assertEqual(g.hist, [])
+
+
 class TestHeroSeriesLabel(unittest.TestCase):
     LABEL_BAND = (12, mudi.HeroGraph.TOP + 66, 90, mudi.HeroGraph.TOP + 78)
 
@@ -579,9 +591,9 @@ class TestMockPreview(unittest.TestCase):
         gauge = only(page, mudi.Gauge)
         # wire()'s replay alone puts ONE real sys.load sample into hist (MockApp.subscribe calls
         # back immediately) -- that single point would satisfy the magnitude checks below even
-        # with the seeding line disabled, so pin the length too: only the seeding loop (range(64))
-        # produces 64 points.
-        self.assertEqual(len(gauge.hist), 64, gauge.hist)
+        # with the seeding line disabled, so pin the length too: only the seeding loop fills
+        # hist to the widget's POINTS cap.
+        self.assertEqual(len(gauge.hist), mudi.HeroGraph.POINTS, gauge.hist)
         batt = mudi.MOCK_DATA["batt.pct"]                 # headline (~100) -- must NOT be near this
         load = mudi.MOCK_DATA["sys.load"]                 # declared series (~1.39) -- must be near this
         self.assertTrue(all(abs(v - batt) > 10 for v in gauge.hist),
