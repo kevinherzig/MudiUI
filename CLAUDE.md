@@ -38,6 +38,18 @@ box over this doc if they ever disagree** — then fix the doc.
 - **evdev input devices allow multiple concurrent readers; the framebuffer is single-owner.**
   This asymmetry is load-bearing (see the toggle watcher in §5).
 
+- **⏰ NO USABLE RTC — the wall clock STEPS FORWARD BY HOURS a few seconds after every boot.**
+  `hwclock -r` reads *1970*; the box boots with a stale `time.time()` and cellular/NTP then steps
+  it. Measured live 2026-07-17: `mudi.py` started at uptime 71s stamped `Jul 16 21:40`, while the
+  box had been up 714s and the wall clock read `Jul 17 07:31` — a **+34,900s jump landing seconds
+  after MudiUI starts**. `time.monotonic()` is immune (it tracks `/proc/uptime`).
+  **NEVER measure a duration with `time.time()` on this box** — idle timers, long-press holds,
+  throughput `dt`. Anything that captures a start before the step reads a ~9.7h elapsed after it.
+  This caused the panel to blank instantly on every cold boot despite `screen_timeout=300` (fixed
+  2026-07-17: `App._idle_expired`, `App.last_touch`, `App.run`'s `t0`, `EthernetSource.poll`'s
+  `dt`, and `mudi-watch.py`'s `down_t` all use `time.monotonic()`). A wall-clock read is only
+  correct for an absolute timestamp you intend to display.
+
 RGB565 packing (numpy, vectorized ~5 ms/frame — this Pillow has **no `BGR;16` packer**):
 `((r&0xF8)<<8) | ((g&0xFC)<<3) | (b>>3)` stored as little-endian `<u2`.
 
