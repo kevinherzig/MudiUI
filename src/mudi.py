@@ -267,7 +267,7 @@ class EthernetSource(DataSource):
         self._emit("eth.ip", ip); self._emit("eth.proto", st.get("proto", "—"))
         rx = int(_read("/sys/class/net/%s/statistics/rx_bytes" % self.lan) or 0)
         tx = int(_read("/sys/class/net/%s/statistics/tx_bytes" % self.lan) or 0)
-        now = time.time()
+        now = time.monotonic()          # duration, not a timestamp -- immune to the NTP clock step
         if self._prev:
             dt = (now - self._pt) or 1
             rxk = int((rx - self._prev[0]) / dt / 1024); txk = int((tx - self._prev[1]) / dt / 1024)
@@ -855,7 +855,7 @@ class App:
         self._toggle_req = threading.Event()
         self.settings = Settings()
         self.modal = None                                 # Confirm / About overlay, or None
-        self.blanked = False; self._wokeup = False; self.last_touch = time.time()
+        self.blanked = False; self._wokeup = False; self.last_touch = time.monotonic()
 
     def invalidate(self): self.wake.set()
 
@@ -935,6 +935,16 @@ class App:
         if str(self.settings.get("stay_awake_charging")) != "1": return False
         try: return bool(_ubus("mcu", "status", {}).get("charging_status", 0))
         except Exception: return False
+    def _idle_expired(self):
+        # The E5800 has no usable RTC (hwclock reads 1970 at boot), so it boots with a stale
+        # wall clock and then NTP/cellular time STEPS it forward by hours once network time
+        # is available (measured live: +34,900s, landing seconds after MudiUI starts). last_touch
+        # is captured before that step; time.time() - last_touch after the step reads as an
+        # enormous "idle" duration and blanks the panel instantly on every cold boot. Durations
+        # must be measured on time.monotonic(), which is immune to wall-clock steps -- do not
+        # "simplify" this back to time.time().
+        to = self._timeout_secs()
+        return to > 0 and self.modal is None and time.monotonic() - self.last_touch > to
     def _blank(self):
         self.blanked = True
         for node, v in ((BL_DIR + "/bl_power", "1"), (BL_DIR + "/brightness", "0")):
@@ -1018,7 +1028,7 @@ class App:
                         if sv is not None: p.scroll_to(sv)              # live follow (page at touch-down)
                 elif e.type == ecodes.EV_KEY and e.code == ecodes.BTN_TOUCH:
                     if e.value == 1:
-                        down = True; self.last_touch = time.time()
+                        down = True; self.last_touch = time.monotonic()
                         p = self.current
                         scrollable = (isinstance(p, ScrollPage) and p.scrollable()
                                       and self.modal is None and not self.paused
@@ -1027,7 +1037,7 @@ class App:
                                scrollable=scrollable)
                         if self.blanked: self._unblank(); self._wokeup = True   # wake on touch-down
                     elif e.value == 0 and down:
-                        down = False; self.last_touch = time.time()
+                        down = False; self.last_touch = time.monotonic()
                         kind, arg = g.up(x, y)
                         if self._wokeup: self._wokeup = False; continue        # waking touch: swallow
                         if self.paused: continue                               # gl_screen owns the UI
@@ -1056,7 +1066,7 @@ class App:
         signal.signal(signal.SIGUSR1, lambda *_: self._toggle_req.set())   # long-press toggle
         threading.Thread(target=self._touch, daemon=True).start()
         self.show(start)
-        th = self.theme; prev_anim = False; first = True; t0 = time.time()
+        th = self.theme; prev_anim = False; first = True; t0 = time.monotonic()
         try:
             with open("/dev/fb0", "r+b", buffering=0) as fb:
                 while not self.stop.is_set():
@@ -1064,15 +1074,14 @@ class App:
                         self._toggle_req.clear(); self._do_toggle(); first = True
                     if self.paused:                        # gl_screen owns the panel; sit idle
                         self.wake.wait(0.2)
-                        if duration and time.time()-t0 > duration: break
+                        if duration and time.monotonic()-t0 > duration: break
                         continue
                     if self.blanked:                       # backlight off; wait for a touch to wake
                         self.wake.wait(0.3)
-                        if duration and time.time()-t0 > duration: break
+                        if duration and time.monotonic()-t0 > duration: break
                         continue
-                    to = self._timeout_secs()              # idle-blank
-                    if to > 0 and self.modal is None and time.time()-self.last_touch > to:
-                        if self._stay_awake_active(): self.last_touch = time.time()
+                    if self._idle_expired():               # idle-blank
+                        if self._stay_awake_active(): self.last_touch = time.monotonic()
                         else: self._blank(); continue
                     anim = self.current.animate()
                     if first or self.wake.is_set() or anim or prev_anim:
@@ -1082,7 +1091,7 @@ class App:
                         if self.modal is not None: self.modal.draw(d, th)
                         fb.seek(0); fb.write(pack565(img)); first = False
                     prev_anim = anim
-                    if duration and time.time()-t0 > duration: break
+                    if duration and time.monotonic()-t0 > duration: break
                     if anim: self.stop.wait(1/30.0)
                     else: self.wake.wait(0.2)
         finally:

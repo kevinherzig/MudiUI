@@ -7,6 +7,7 @@ import io
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 import numpy as np
@@ -595,6 +596,56 @@ class TestMockPreview(unittest.TestCase):
         page.wire()
         self.assertTrue([w for w in page.widgets if hasattr(w, "hist")],
                         "seeding relies on duck-typing, not an isinstance list")
+
+
+class TestIdleBlankSurvivesClockStep(unittest.TestCase):
+    """The Mudi has no usable RTC: it boots with a stale wall clock, then NTP steps it forward
+       by hours (measured on the box: +34,900s, landing seconds after MudiUI starts). An idle
+       timer measured on time.time() reads that step as a huge idle period and blanks the panel
+       instantly at every boot. Durations must use the monotonic clock."""
+
+    def app(self, timeout="300"):
+        a = mudi.MockApp()
+        a.settings.vals["screen_timeout"] = timeout
+        return a
+
+    def test_a_fresh_touch_does_not_expire(self):
+        a = self.app()
+        a.last_touch = time.monotonic()
+        self.assertFalse(a._idle_expired())
+
+    def test_expires_once_past_the_configured_timeout(self):
+        a = self.app()
+        a.last_touch = time.monotonic() - 301
+        self.assertTrue(a._idle_expired())
+
+    def test_does_not_expire_just_under_the_timeout(self):
+        a = self.app()
+        a.last_touch = time.monotonic() - 299
+        self.assertFalse(a._idle_expired())
+
+    def test_timeout_of_zero_never_expires(self):
+        a = self.app("0")
+        a.last_touch = time.monotonic() - 99999
+        self.assertFalse(a._idle_expired())
+
+    def test_an_open_modal_never_expires(self):
+        a = self.app()
+        a.last_touch = time.monotonic() - 9999
+        a.modal = object()
+        self.assertFalse(a._idle_expired())
+
+    def test_a_wall_clock_step_does_not_blank_the_panel(self):
+        # the actual boot bug: NTP steps the wall clock forward ~9.7h just after last_touch
+        a = self.app()
+        a.last_touch = time.monotonic()
+        real = time.time
+        try:
+            time.time = lambda: real() + 34900
+            self.assertFalse(a._idle_expired(),
+                             "a wall-clock step must not expire the idle timer")
+        finally:
+            time.time = real
 
 
 if __name__ == "__main__":

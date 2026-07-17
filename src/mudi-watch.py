@@ -39,6 +39,10 @@ def toggle():
         subprocess.run(["/etc/init.d/mudi", "start"])
 
 def watch():
+    # down_t measures a held-touch DURATION, so it must use time.monotonic(), not time.time().
+    # The E5800 has no usable RTC: it boots with a stale wall clock, then NTP steps it forward
+    # by hours once network time arrives. If a finger happened to be down across that step,
+    # time.time() - down_t would instantly satisfy ">= hold" and fire a spurious stock-UI toggle.
     dev = InputDevice(TOUCH)
     down_t = None; x0 = y0 = x = y = 0; fired = False; hold = HOLD
     while True:
@@ -46,7 +50,7 @@ def watch():
         if r:
             for e in dev.read():
                 if e.type == ecodes.EV_KEY and e.code == ecodes.BTN_TOUCH:
-                    if e.value == 1: down_t = time.time(); x0, y0 = x, y; fired = False; hold = read_hold()
+                    if e.value == 1: down_t = time.monotonic(); x0, y0 = x, y; fired = False; hold = read_hold()
                     else: down_t = None; fired = False
                 elif e.type == ecodes.EV_ABS:
                     if e.code in (ecodes.ABS_X, ecodes.ABS_MT_POSITION_X): x = e.value
@@ -54,7 +58,7 @@ def watch():
         if down_t and not fired:
             if abs(x - x0) > MOVE_TOL or abs(y - y0) > MOVE_TOL:
                 down_t = None                                  # moved -> it's a swipe, not a hold
-            elif time.time() - down_t >= hold:
+            elif time.monotonic() - down_t >= hold:
                 fired = True; down_t = None
                 toggle()
                 time.sleep(DEBOUNCE)
