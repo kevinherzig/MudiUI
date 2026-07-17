@@ -25,6 +25,9 @@ One of the use cases I felt was missing was the ability to use the screen to hel
 modem correctly by showing me a live view of signal strength / tower / band / bandwith.  So I used
 Claude Code to create this series of screens.
 
+Note that the modem itself only provides updated information every 20s or so, so this is the fastest
+you'll see those updates.
+
 ## How it works
 
 MudiUI inserts itself first in the boot sequence before GL's gl_screen.  It displays the graphs
