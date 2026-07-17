@@ -1,6 +1,8 @@
 # MudiUI
 
-A custom front-panel UI for the **GL.iNet GL-E5800 "Mudi"** 5G travel router.
+An EXPERIMENTAL vibe-coded custom front-panel UI for the **GL.iNet GL-E5800 "Mudi"** 5G travel router. 
+
+I am looking for adventerous people to try this out and provide feedback.
 
 MudiUI draws its own dashboard to the Mudi's built-in 240×320 LCD — live cellular signal,
 Wi-Fi, system, and Ethernet gauges, plus a touch **Settings** page — as a companion to (and
