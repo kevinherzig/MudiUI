@@ -125,7 +125,7 @@ def _read(path):
 class Settings:
     """Reads/writes uci /etc/config/mudi (section 'main'). Falls back to DEFAULTS off-device."""
     PKG = "mudi"; SEC = "main"
-    DEFAULTS = {"brightness": "90", "screen_timeout": "30", "stay_awake_charging": "1",
+    DEFAULTS = {"brightness": "90", "screen_timeout": "600", "stay_awake_charging": "1",
                 "default_page": "0", "band_lock": "0", "net_mode": "auto",
                 "longpress": "1.6", "start_on_boot": "1", "graph_style": "hero"}
 
@@ -778,13 +778,17 @@ class EthernetPage(MetricPage):
 class SettingsPage(ScrollPage):
     title = "Settings"
     PAGE_NAMES = ("Signal", "WiFi", "System", "Eth")
-    TIMEOUTS = {"0": "Off", "15": "15s", "30": "30s", "60": "1m", "300": "5m"}
+    # Single source of truth for the stepper: insertion order IS the stepper order, keys are the
+    # stored uci values (seconds), values are the labels. "0" = never blank (_idle_expired gates
+    # on `to > 0`), and it sits last so [+] walks up to "no timeout".
+    TIMEOUTS = {"30": "30s", "60": "1m", "300": "5m", "600": "10m",
+                "1200": "20m", "3600": "60m", "0": "None"}
     def build(self):
         a = self.app
         self.add(Banner(a, "Settings"))
         rows = [
             SliderRow(a, "Brightness", "brightness", 20, 120),
-            StepperRow(a, "Screen timeout", "screen_timeout", ["0", "15", "30", "60", "300"],
+            StepperRow(a, "Screen timeout", "screen_timeout", list(self.TIMEOUTS),
                        fmt=lambda v: self.TIMEOUTS.get(v, v)),
             ToggleRow(a, "Awake on charge", "stay_awake_charging"),
             StepperRow(a, "Graph style", "graph_style", list(GAUGE_STYLES),

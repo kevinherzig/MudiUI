@@ -5,6 +5,7 @@ Run from the repo root:  python3 -m unittest discover -s tests -v
 import contextlib
 import io
 import os
+import re
 import sys
 import tempfile
 import time
@@ -608,6 +609,35 @@ class TestMockPreview(unittest.TestCase):
         page.wire()
         self.assertTrue([w for w in page.widgets if hasattr(w, "hist")],
                         "seeding relies on duck-typing, not an isinstance list")
+
+
+class TestScreenTimeoutOptions(unittest.TestCase):
+    """The stepper's options and labels come from one dict, and the shipped defaults have to name
+       a value that's actually in it -- otherwise StepperRow.index() silently falls back to the
+       first option and the panel shows a timeout the box isn't using."""
+
+    def test_every_option_has_a_label(self):
+        # fmt falls back to the raw value, so a missing label renders as "600" instead of "10m".
+        for v, label in mudi.SettingsPage.TIMEOUTS.items():
+            self.assertTrue(label and not label.isdigit(), "unlabelled timeout option: %r" % v)
+
+    def test_default_is_a_selectable_option(self):
+        self.assertIn(mudi.Settings.DEFAULTS["screen_timeout"], mudi.SettingsPage.TIMEOUTS)
+
+    def test_shipped_uci_default_matches_code_default(self):
+        cfg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "src", "mudi.config")
+        with open(cfg) as fh:
+            shipped = re.search(r"option screen_timeout '(\d+)'", fh.read()).group(1)
+        self.assertEqual(shipped, mudi.Settings.DEFAULTS["screen_timeout"])
+
+    def test_none_is_last_and_disables_blanking(self):
+        # "0" must stay in the list ("None") and must mean never-blank, not blank-immediately.
+        self.assertEqual(list(mudi.SettingsPage.TIMEOUTS)[-1], "0")
+        a = mudi.MockApp()
+        a.settings.vals["screen_timeout"] = "0"
+        a.last_touch = time.monotonic() - 86400
+        self.assertFalse(a._idle_expired())
 
 
 class TestIdleBlankSurvivesClockStep(unittest.TestCase):
