@@ -193,6 +193,8 @@ the physical button. Two cooperating pieces:
   process count use `pidof python3` then check `/proc/<pid>/task`. Clean restart of a stray writer:
   `for p in $(pidof python3); do grep -q mudi.py /proc/$p/cmdline && kill -9 $p; done`.
 - To iterate on code under the service: `cat > /usr/bin/mudi.py` then `/etc/init.d/mudi restart`.
+  (Since the `procd_set_param file` fix in §9, plain `start` also respawns on a changed script —
+  but `restart` is unconditional, so it stays the reliable habit.)
 - **`Settings → Start on boot` really does enable/disable the procd services** (`apply_setting`
   runs `/etc/init.d/{mudi,mudi-watch} {enable,disable}`), removing the `/etc/rc.d/S9*` symlinks.
   Its effect is **invisible until the next reboot** — the panel looks identical. If MudiUI
@@ -274,6 +276,18 @@ reboots persist via `/overlay`):
   start`) — must **not** just exit, or `respawn` re-grabs the panel.
 - **`mudi-watch`** (`/etc/init.d/mudi-watch`, source `src/mudi-watch.init`): `START=98`,
   `respawn 3600 5 0` (always restart — it's the way back). Never owns the framebuffer.
+- **⚠️ procd `start` only respawns if the INSTANCE CONFIG changed — overwriting the script is
+  invisible to it.** `start` re-submits the instance definition (command + params); procd diffs it
+  against the running instance and does *nothing* if it matches. Since the command line
+  (`python3 /usr/bin/mudi.py --service`) doesn't depend on file contents, `cp`-ing a new `mudi.py`
+  and calling `start` left the **old code resident** — verified live 2026-07-17 (pid unchanged
+  across `cp`+`start`; only `restart` gave a new pid). **Fix: both init scripts now
+  `procd_set_param file "$PROG"`**, which hashes the script into the instance config, so a changed
+  file *is* a config change and `start` respawns. Verified on-box: no-change `start` → no respawn
+  (still idempotent, boot-safe); changed-file `start` → respawn. This is what makes install.sh's
+  overwrite-then-`start` a real update path. Don't "simplify" install.sh to `restart` instead —
+  `restart` runs `stop` first, and `mudi.init`'s `stop_service()` unconditionally starts
+  `gl_screen`, so a fresh install would bounce the stock UI up just to seize the panel back.
 - **Installer** — `src/install.sh` (run **on the box**: `cd src && sh install.sh`): device guard
   (root + `240,320` `/dev/fb0` + E5800 model, `MUDI_FORCE=1` overrides model only), installs only
   missing opkg deps (pillow via `--nodeps`), deploys the 4 files, enables both services,

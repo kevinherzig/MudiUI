@@ -12,6 +12,11 @@ PROG=/usr/bin/mudi.py
 start_service() {
     procd_open_instance
     procd_set_param command python3 "$PROG" --service
+    # hash $PROG into the instance config so procd notices a changed script and
+    # respawns on plain `start`. Without this, `start` on an already-running
+    # service is a no-op (config unchanged) and the old code stays resident —
+    # install.sh's overwrite-then-start update path would have no visible effect.
+    procd_set_param file "$PROG"
     procd_set_param respawn 3600 5 5     # give up if it crashes >5x within an hour
     procd_set_param stdout 1
     procd_set_param stderr 1
