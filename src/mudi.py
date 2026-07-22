@@ -1077,12 +1077,17 @@ class App:
                 while not self.stop.is_set():
                     if self._toggle_req.is_set():
                         self._toggle_req.clear(); self._do_toggle(); first = True
+                    # Sleep on stop (not wake) while paused/blanked. wake is edge-triggered for
+                    # redraws: Event.wait returns immediately while the flag stays set, and only
+                    # the draw path clears it. DataSources keep invalidating while blanked (page
+                    # still wired), so wake.wait here busy-spins at ~1 core forever after the
+                    # first post-blank emit. stop.wait always blocks for the timeout instead.
                     if self.paused:                        # gl_screen owns the panel; sit idle
-                        self.wake.wait(0.2)
+                        self.stop.wait(0.2)
                         if duration and time.monotonic()-t0 > duration: break
                         continue
                     if self.blanked:                       # backlight off; wait for a touch to wake
-                        self.wake.wait(0.3)
+                        self.stop.wait(0.3)
                         if duration and time.monotonic()-t0 > duration: break
                         continue
                     if self._idle_expired():               # idle-blank
